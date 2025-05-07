@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 import struct
 from smart_contract import ContractManager
 from consensus import Consensus
+from zk_quantum import ZKRollup, QuantumResistantCrypto, ZKTransaction
 import os
 import logging
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ class ShardInfo:
     transactions: List[Dict]
     state_root: str
     last_block: int
+    zk_rollup: Optional[ZKRollup] = None
 
 class Block:
     def __init__(self, index: int, timestamp: float, transactions: List[Dict], previous_hash: str, nonce: int = 0):
@@ -35,6 +37,7 @@ class Block:
         self.cross_chain_refs: List[Dict] = []
         self.state_root: str = ""
         self.receipt_root: str = ""
+        self.zk_proof: Optional[bytes] = None  # Zero-knowledge proof for the block
 
     def calculate_hash(self) -> str:
         """Calculate the hash of the block contents."""
@@ -47,10 +50,11 @@ class Block:
             "shard_id": self.shard_id,
             "cross_chain_refs": self.cross_chain_refs,
             "state_root": self.state_root,
-            "receipt_root": self.receipt_root
+            "receipt_root": self.receipt_root,
+            "zk_proof": self.zk_proof.hex() if self.zk_proof else None
         }, sort_keys=True).encode()
         
-        return hashlib.sha256(block_string).hexdigest()
+        return hashlib.sha3_256(block_string).hexdigest()  # Using SHA3-256 for quantum resistance
     
     def mine_block(self, difficulty: int) -> None:
         """Mine the block by finding a hash with the required number of leading zeros."""
@@ -75,7 +79,8 @@ class Block:
             "shard_id": self.shard_id,
             "cross_chain_refs": self.cross_chain_refs,
             "state_root": self.state_root,
-            "receipt_root": self.receipt_root
+            "receipt_root": self.receipt_root,
+            "zk_proof": self.zk_proof.hex() if self.zk_proof else None
         }
 
 class Blockchain:
@@ -90,19 +95,23 @@ class Blockchain:
         self.max_transactions_per_block = 1000
         self.min_transaction_fee = 0.001  # Minimum fee in STRZ
         
+        # Initialize quantum-resistant cryptography
+        self.quantum_crypto = QuantumResistantCrypto()
+        
         # Sharding configuration
         self.num_shards = 4
         self.shards: Dict[int, ShardInfo] = {}
         self.cross_chain_bridges: Dict[str, Dict] = {}
         
-        # Initialize shards
+        # Initialize shards with ZK-rollups
         for i in range(self.num_shards):
             self.shards[i] = ShardInfo(
                 id=i,
                 validators=[],
                 transactions=[],
                 state_root="",
-                last_block=0
+                last_block=0,
+                zk_rollup=ZKRollup()
             )
         
         # Create the genesis block
@@ -169,11 +178,36 @@ class Blockchain:
         return hashlib.sha256(tx_string).hexdigest()
 
     def verify_transaction_signature(self, transaction: Dict) -> bool:
-        """Verify the signature of a transaction"""
-        # Implementation depends on your wallet's signing mechanism
-        return True
+        """Verify the signature of a transaction using quantum-resistant cryptography"""
+        if "signature" not in transaction:
+            return False
+        
+        try:
+            # For ZK transactions, verify the ZK proof
+            if transaction.get("is_zk", False):
+                shard_id = int(hashlib.sha256(transaction["sender"].encode()).hexdigest(), 16) % self.num_shards
+                zk_rollup = self.shards[shard_id].zk_rollup
+                if zk_rollup and "zk_proof" in transaction:
+                    return zk_rollup.verify_zk_proof(transaction["zk_proof"])
+            
+            # For regular transactions, verify the quantum-resistant signature
+            message = json.dumps({
+                "sender": transaction["sender"],
+                "recipient": transaction["recipient"],
+                "amount": transaction["amount"],
+                "timestamp": transaction["timestamp"]
+            }).encode()
+            
+            return self.quantum_crypto.verify_signature(
+                message,
+                transaction["signature"],
+                self.quantum_crypto.generate_key_pair()[1]  # Public key
+            )
+        except Exception as e:
+            logger.error(f"Error verifying transaction signature: {e}")
+            return False
 
-    def create_transaction(self, sender: str, recipient: str, amount: float, fee: float = 0.001) -> bool:
+    def create_transaction(self, sender: str, recipient: str, amount: float, fee: float = 0.001, use_zk: bool = False) -> bool:
         """Add a new transaction to the pending transactions pool."""
         if fee < self.min_transaction_fee:
             return False
@@ -185,6 +219,32 @@ class Blockchain:
             "fee": fee,
             "timestamp": time.time()
         }
+        
+        if use_zk:
+            # Generate zero-knowledge proof for the transaction
+            shard_id = int(hashlib.sha256(sender.encode()).hexdigest(), 16) % self.num_shards
+            zk_rollup = self.shards[shard_id].zk_rollup
+            
+            if zk_rollup:
+                proof = zk_rollup.generate_zk_proof(transaction)
+                if proof:
+                    # Create ZK transaction
+                    zk_tx = ZKTransaction(
+                        sender=sender,
+                        recipient=recipient,
+                        amount=amount,
+                        proof=proof,
+                        timestamp=time.time(),
+                        signature=self.quantum_crypto.sign(
+                            json.dumps(transaction).encode(),
+                            self.quantum_crypto.generate_key_pair()[0]
+                        )
+                    )
+                    
+                    # Add to ZK-rollup batch
+                    if zk_rollup.add_transaction_to_batch(zk_tx):
+                        transaction["zk_proof"] = proof
+                        transaction["is_zk"] = True
         
         if self.validate_transaction(transaction):
             tx_hash = self.calculate_transaction_hash(transaction)
@@ -224,8 +284,18 @@ class Blockchain:
             self.get_latest_block().hash
         )
         
-        # Assign transactions to shards
+        # Assign transactions to shards and generate ZK proofs
         self._assign_transactions_to_shards(block)
+        
+        # Generate ZK proof for the block if it contains ZK transactions
+        if any(tx.get("is_zk", False) for tx in block.transactions):
+            shard_id = block.shard_id
+            if shard_id is not None:
+                zk_rollup = self.shards[shard_id].zk_rollup
+                if zk_rollup:
+                    batch_proof = zk_rollup.generate_batch_proof()
+                    if batch_proof:
+                        block.zk_proof = batch_proof.proof
         
         # Mine the block
         block.mine_block(self.difficulty)
@@ -405,6 +475,7 @@ class Blockchain:
                 block.cross_chain_refs = block_data.get("cross_chain_refs", [])
                 block.state_root = block_data.get("state_root", "")
                 block.receipt_root = block_data.get("receipt_root", "")
+                block.zk_proof = bytes.fromhex(block_data.get("zk_proof", "")) if block_data.get("zk_proof") else None
                 blockchain.chain.append(block)
             
             blockchain.pending_transactions = data["pending_transactions"]
@@ -416,7 +487,8 @@ class Blockchain:
                     validators=shard_data["validators"],
                     transactions=[],
                     state_root=shard_data["state_root"],
-                    last_block=shard_data["last_block"]
+                    last_block=shard_data["last_block"],
+                    zk_rollup=ZKRollup()
                 )
             
             # Load cross-chain bridges

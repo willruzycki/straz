@@ -7,6 +7,8 @@ import os
 import json
 from typing import Dict, Any
 import logging
+import time
+import hashlib
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -95,12 +97,26 @@ def create_transaction():
         return jsonify({"error": "Missing required fields"}), 400
         
     try:
-        blockchain.create_transaction(
+        # Check if this is a ZK transaction
+        use_zk = data.get("use_zk", False)
+        
+        success = blockchain.create_transaction(
             data["sender"],
             data["recipient"],
-            float(data["amount"])
+            float(data["amount"]),
+            float(data.get("fee", 0.001)),
+            use_zk=use_zk
         )
-        return jsonify({"message": "Transaction added to pool"}), 201
+        
+        if success:
+            response = {
+                "message": "Transaction added to pool",
+                "is_zk": use_zk
+            }
+            if use_zk:
+                response["zk_status"] = "ZK proof generated and verified"
+            return jsonify(response), 201
+        return jsonify({"error": "Transaction validation failed"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -240,6 +256,146 @@ def get_validator(address):
     if "error" in info:
         return jsonify(info), 404
     return jsonify(info)
+
+@app.route("/api/zk/verify", methods=["POST"])
+def verify_zk_proof():
+    """Verify a zero-knowledge proof"""
+    logger.debug("Handling /api/zk/verify POST request")
+    data = request.get_json()
+    required_fields = ["proof", "public_inputs"]
+    
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    try:
+        # Get the appropriate ZK-rollup instance
+        shard_id = int(hashlib.sha256(data["sender"].encode()).hexdigest(), 16) % blockchain.num_shards
+        zk_rollup = blockchain.shards[shard_id].zk_rollup
+        
+        if not zk_rollup:
+            return jsonify({"error": "ZK-rollup not available for this shard"}), 400
+        
+        # Create ZKProof object
+        proof = ZKProof(
+            proof=bytes.fromhex(data["proof"]),
+            public_inputs=data["public_inputs"],
+            timestamp=time.time(),
+            verifier_key=bytes.fromhex(data.get("verifier_key", ""))
+        )
+        
+        # Verify the proof
+        is_valid = zk_rollup.verify_zk_proof(proof)
+        
+        return jsonify({
+            "is_valid": is_valid,
+            "timestamp": time.time()
+        }), 200
+    except Exception as e:
+        logger.error(f"Error verifying ZK proof: {e}")
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/zk/batch", methods=["POST"])
+def create_zk_batch():
+    """Create a new ZK-rollup batch"""
+    logger.debug("Handling /api/zk/batch POST request")
+    data = request.get_json()
+    required_fields = ["shard_id", "transactions"]
+    
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    try:
+        shard_id = data["shard_id"]
+        if shard_id not in blockchain.shards:
+            return jsonify({"error": "Invalid shard ID"}), 400
+        
+        zk_rollup = blockchain.shards[shard_id].zk_rollup
+        if not zk_rollup:
+            return jsonify({"error": "ZK-rollup not available for this shard"}), 400
+        
+        # Process each transaction in the batch
+        successful_txs = []
+        for tx in data["transactions"]:
+            if zk_rollup.add_transaction_to_batch(tx):
+                successful_txs.append(tx)
+        
+        # Generate batch proof
+        batch_proof = zk_rollup.generate_batch_proof()
+        
+        return jsonify({
+            "message": "Batch created successfully",
+            "successful_transactions": len(successful_txs),
+            "batch_proof": batch_proof.proof.hex() if batch_proof else None,
+            "timestamp": time.time()
+        }), 201
+    except Exception as e:
+        logger.error(f"Error creating ZK batch: {e}")
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/quantum/key", methods=["POST"])
+def generate_quantum_key():
+    """Generate a new quantum-resistant key pair"""
+    logger.debug("Handling /api/quantum/key POST request")
+    try:
+        private_key, public_key = blockchain.quantum_crypto.generate_key_pair()
+        
+        return jsonify({
+            "private_key": private_key.decode(),
+            "public_key": public_key.decode(),
+            "timestamp": time.time()
+        }), 201
+    except Exception as e:
+        logger.error(f"Error generating quantum key pair: {e}")
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/quantum/sign", methods=["POST"])
+def quantum_sign():
+    """Sign a message using quantum-resistant cryptography"""
+    logger.debug("Handling /api/quantum/sign POST request")
+    data = request.get_json()
+    required_fields = ["message", "private_key"]
+    
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    try:
+        signature = blockchain.quantum_crypto.sign(
+            data["message"].encode(),
+            data["private_key"].encode()
+        )
+        
+        return jsonify({
+            "signature": signature.hex(),
+            "timestamp": time.time()
+        }), 200
+    except Exception as e:
+        logger.error(f"Error signing message: {e}")
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/api/quantum/verify", methods=["POST"])
+def quantum_verify():
+    """Verify a quantum-resistant signature"""
+    logger.debug("Handling /api/quantum/verify POST request")
+    data = request.get_json()
+    required_fields = ["message", "signature", "public_key"]
+    
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    try:
+        is_valid = blockchain.quantum_crypto.verify_signature(
+            data["message"].encode(),
+            bytes.fromhex(data["signature"]),
+            data["public_key"].encode()
+        )
+        
+        return jsonify({
+            "is_valid": is_valid,
+            "timestamp": time.time()
+        }), 200
+    except Exception as e:
+        logger.error(f"Error verifying signature: {e}")
+        return jsonify({"error": str(e)}), 400
 
 # Initialize on startup
 load_or_create_wallet_manager()

@@ -29,3 +29,7 @@ pytest-tldr==0.2.5
 pytest-watch==4.2.0
 pytest-xprocess==0.23.0
 pytest-xvfb==3.0.0
+numpy==1.26.4
+scipy==1.12.0
+liboqs-python==0.7.2
+pycryptodome==3.20.0
