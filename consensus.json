@@ -1,0 +1,12 @@
+{
+    "difficulty": 4,
+    "validators": {
+        "1K1XmPJVgnth11unZXvoMsL1aMkqJMgh1P": {
+            "stake": 1000.0,
+            "last_vote": 1746581868.2818592,
+            "is_active": true
+        }
+    },
+    "current_epoch": 0,
+    "leader_schedule": {}
+}

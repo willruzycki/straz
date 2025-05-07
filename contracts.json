@@ -1,0 +1,16 @@
+{
+    "contracts": {
+        "0x149bee9d2687d26ef3e7ca62ded46cf9484d8fce": {
+            "address": "0x149bee9d2687d26ef3e7ca62ded46cf9484d8fce",
+            "code": "def hello(self, name):\n    return f\"Hello, {name}!\"",
+            "owner": "1K1XmPJVgnth11unZXvoMsL1aMkqJMgh1P",
+            "state": {
+                "balance": 0.0,
+                "storage": {}
+            }
+        }
+    },
+    "code": {
+        "0x149bee9d2687d26ef3e7ca62ded46cf9484d8fce": "def hello(self, name):\n    return f\"Hello, {name}!\""
+    }
+}

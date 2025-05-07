@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  straz-node:
+    build: .
+    ports:
+      - "5001:5001"  # API port
+      - "6000:6000"  # P2P port
+    volumes:
+      - ./wallets:/app/wallets
+      - ./straz_blockchain.json:/app/straz_blockchain.json
+    environment:
+      - NODE_HOST=0.0.0.0
+      - NODE_PORT=6000
+      - API_HOST=0.0.0.0
+      - API_PORT=5001
+    restart: unless-stopped 

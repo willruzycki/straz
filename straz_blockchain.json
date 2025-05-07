@@ -1,0 +1,75 @@
+{
+    "chain": [
+        {
+            "index": 0,
+            "timestamp": 1746579890.492359,
+            "transactions": [],
+            "previous_hash": "0",
+            "nonce": 0,
+            "hash": "036abd1ae39b645783691c576bfa1d7a79a94014a0961dd0796c48d0ef533c9f",
+            "validator_signatures": []
+        },
+        {
+            "index": 1,
+            "timestamp": 1746579890.492533,
+            "transactions": [
+                {
+                    "sender": "COINBASE",
+                    "recipient": "18nXnrPE9Worf5qdzVDijvmzgUGXUHABed",
+                    "amount": 50,
+                    "timestamp": 1746579890.492533
+                }
+            ],
+            "previous_hash": "036abd1ae39b645783691c576bfa1d7a79a94014a0961dd0796c48d0ef533c9f",
+            "nonce": 17682,
+            "hash": "0000223057bda71ae5039eacf9a03233ecb4335169d23be01c1a751afc48630c",
+            "validator_signatures": []
+        },
+        {
+            "index": 2,
+            "timestamp": 1746579890.555434,
+            "transactions": [
+                {
+                    "sender": "18nXnrPE9Worf5qdzVDijvmzgUGXUHABed",
+                    "recipient": "15CAQYMYsmnnL2giK5F9pZ2ycqcY5kQNGq",
+                    "amount": 25,
+                    "timestamp": 1746579890.5554292
+                },
+                {
+                    "sender": "COINBASE",
+                    "recipient": "18nXnrPE9Worf5qdzVDijvmzgUGXUHABed",
+                    "amount": 50,
+                    "timestamp": 1746579890.555434
+                }
+            ],
+            "previous_hash": "0000223057bda71ae5039eacf9a03233ecb4335169d23be01c1a751afc48630c",
+            "nonce": 26343,
+            "hash": "0000572fa764b4339f350efc91c41dc2c95829406dae0b9f843b60ea53aae805",
+            "validator_signatures": []
+        },
+        {
+            "index": 3,
+            "timestamp": 1746580213.303033,
+            "transactions": [
+                {
+                    "sender": "1Bb9Bqgw9L1F4M61dDyNuwU3Jqgd8RRM4x",
+                    "recipient": "1CkoNV1NVGFAYWvxig9JPoKC9UqJtFzPaS",
+                    "amount": 10.0,
+                    "timestamp": 1746580211.689599
+                },
+                {
+                    "sender": "COINBASE",
+                    "recipient": "1Bb9Bqgw9L1F4M61dDyNuwU3Jqgd8RRM4x",
+                    "amount": 50,
+                    "timestamp": 1746580213.303029
+                }
+            ],
+            "previous_hash": "0000572fa764b4339f350efc91c41dc2c95829406dae0b9f843b60ea53aae805",
+            "nonce": 33771,
+            "hash": "00000447bad37fb87f6e9fede4392122a139714ca030809f4cc142fb2da3446f",
+            "validator_signatures": []
+        }
+    ],
+    "pending_transactions": [],
+    "difficulty": 4
+}
