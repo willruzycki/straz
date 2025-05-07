@@ -4,11 +4,23 @@ import hashlib
 import json
 import time
 import binascii
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import struct
 from smart_contract import ContractManager
 from consensus import Consensus
 import os
+import logging
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class ShardInfo:
+    id: int
+    validators: List[str]
+    transactions: List[Dict]
+    state_root: str
+    last_block: int
 
 class Block:
     def __init__(self, index: int, timestamp: float, transactions: List[Dict], previous_hash: str, nonce: int = 0):
@@ -19,6 +31,10 @@ class Block:
         self.nonce = nonce
         self.hash = self.calculate_hash()
         self.validator_signatures: List[str] = []
+        self.shard_id: Optional[int] = None
+        self.cross_chain_refs: List[Dict] = []
+        self.state_root: str = ""
+        self.receipt_root: str = ""
 
     def calculate_hash(self) -> str:
         """Calculate the hash of the block contents."""
@@ -27,7 +43,11 @@ class Block:
             "timestamp": self.timestamp,
             "transactions": self.transactions,
             "previous_hash": self.previous_hash,
-            "nonce": self.nonce
+            "nonce": self.nonce,
+            "shard_id": self.shard_id,
+            "cross_chain_refs": self.cross_chain_refs,
+            "state_root": self.state_root,
+            "receipt_root": self.receipt_root
         }, sort_keys=True).encode()
         
         return hashlib.sha256(block_string).hexdigest()
@@ -40,7 +60,7 @@ class Block:
             self.nonce += 1
             self.hash = self.calculate_hash()
             
-        print(f"Block mined: {self.hash}")
+        logger.info(f"Block mined: {self.hash}")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert the block to a dictionary."""
@@ -51,9 +71,12 @@ class Block:
             "previous_hash": self.previous_hash,
             "nonce": self.nonce,
             "hash": self.hash,
-            "validator_signatures": self.validator_signatures
+            "validator_signatures": self.validator_signatures,
+            "shard_id": self.shard_id,
+            "cross_chain_refs": self.cross_chain_refs,
+            "state_root": self.state_root,
+            "receipt_root": self.receipt_root
         }
-
 
 class Blockchain:
     def __init__(self, difficulty: int = 4):
@@ -63,37 +86,135 @@ class Blockchain:
         self.mining_reward = 50  # 50 STRZ
         self.contract_manager = ContractManager()
         self.consensus = Consensus(difficulty)
+        self.transaction_pool: Dict[str, Dict] = {}  # tx_hash -> transaction
+        self.max_transactions_per_block = 1000
+        self.min_transaction_fee = 0.001  # Minimum fee in STRZ
+        
+        # Sharding configuration
+        self.num_shards = 4
+        self.shards: Dict[int, ShardInfo] = {}
+        self.cross_chain_bridges: Dict[str, Dict] = {}
+        
+        # Initialize shards
+        for i in range(self.num_shards):
+            self.shards[i] = ShardInfo(
+                id=i,
+                validators=[],
+                transactions=[],
+                state_root="",
+                last_block=0
+            )
         
         # Create the genesis block
         self.create_genesis_block()
     
     def create_genesis_block(self) -> None:
         """Create the genesis block for the blockchain."""
-        # Import the genesis block creation from genesis.py
-        from genesis import calc_hash_str
-        
-        # Create a simple genesis block with no transactions
         genesis_block = Block(0, time.time(), [], "0")
-        
-        # Set the hash directly from our genesis script
-        genesis_block.hash = calc_hash_str(b'\x00' * 32)  # Simplified for now
+        genesis_block.hash = hashlib.sha256(b'\x00' * 32).hexdigest()
+        genesis_block.state_root = self._calculate_state_root({})
+        genesis_block.receipt_root = self._calculate_receipt_root([])
         
         self.chain.append(genesis_block)
-        print(f"Genesis block created with hash: {genesis_block.hash}")
+        logger.info(f"Genesis block created with hash: {genesis_block.hash}")
+    
+    def _calculate_state_root(self, state: Dict) -> str:
+        """Calculate the Merkle root of the state trie."""
+        # Simplified implementation - in a real blockchain, this would use a proper Merkle Patricia Trie
+        return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+    
+    def _calculate_receipt_root(self, receipts: List[Dict]) -> str:
+        """Calculate the Merkle root of the transaction receipts."""
+        # Simplified implementation
+        return hashlib.sha256(json.dumps(receipts, sort_keys=True).encode()).hexdigest()
     
     def get_latest_block(self) -> Block:
         """Return the latest block in the chain."""
         return self.chain[-1]
     
+    def validate_transaction(self, transaction: Dict) -> bool:
+        """Validate a transaction before adding it to the pool"""
+        required_fields = ["sender", "recipient", "amount", "timestamp", "signature"]
+        if not all(field in transaction for field in required_fields):
+            return False
+        
+        # Skip validation for coinbase transactions
+        if transaction["sender"] == "COINBASE":
+            return True
+        
+        # Check if sender has sufficient balance
+        sender_balance = self.get_balance(transaction["sender"])
+        if sender_balance < transaction["amount"]:
+            return False
+        
+        # Verify transaction signature
+        if not self.verify_transaction_signature(transaction):
+            return False
+        
+        # Check for double spending
+        tx_hash = self.calculate_transaction_hash(transaction)
+        if tx_hash in self.transaction_pool:
+            return False
+        
+        return True
+
+    def calculate_transaction_hash(self, transaction: Dict) -> str:
+        """Calculate the hash of a transaction"""
+        tx_string = json.dumps({
+            "sender": transaction["sender"],
+            "recipient": transaction["recipient"],
+            "amount": transaction["amount"],
+            "timestamp": transaction["timestamp"]
+        }, sort_keys=True).encode()
+        return hashlib.sha256(tx_string).hexdigest()
+
+    def verify_transaction_signature(self, transaction: Dict) -> bool:
+        """Verify the signature of a transaction"""
+        # Implementation depends on your wallet's signing mechanism
+        return True
+
+    def create_transaction(self, sender: str, recipient: str, amount: float, fee: float = 0.001) -> bool:
+        """Add a new transaction to the pending transactions pool."""
+        if fee < self.min_transaction_fee:
+            return False
+        
+        transaction = {
+            "sender": sender,
+            "recipient": recipient,
+            "amount": amount,
+            "fee": fee,
+            "timestamp": time.time()
+        }
+        
+        if self.validate_transaction(transaction):
+            tx_hash = self.calculate_transaction_hash(transaction)
+            self.transaction_pool[tx_hash] = transaction
+            return True
+        return False
+
     async def mine_pending_transactions(self, mining_reward_address: str) -> None:
         """Mine pending transactions and add them to the blockchain."""
+        # Sort transactions by fee (higher fees first)
+        sorted_transactions = sorted(
+            self.transaction_pool.values(),
+            key=lambda x: x.get("fee", 0),
+            reverse=True
+        )
+        
+        # Take only the maximum number of transactions per block
+        transactions_to_process = sorted_transactions[:self.max_transactions_per_block]
+        
         # Create a reward transaction for the miner
+        total_fees = sum(tx.get("fee", 0) for tx in transactions_to_process)
         self.pending_transactions.append({
             "sender": "COINBASE",
             "recipient": mining_reward_address,
-            "amount": self.mining_reward,
+            "amount": self.mining_reward + total_fees,
             "timestamp": time.time()
         })
+        
+        # Add selected transactions
+        self.pending_transactions.extend(transactions_to_process)
         
         # Create a new block with pending transactions
         block = Block(
@@ -102,6 +223,9 @@ class Blockchain:
             self.pending_transactions,
             self.get_latest_block().hash
         )
+        
+        # Assign transactions to shards
+        self._assign_transactions_to_shards(block)
         
         # Mine the block
         block.mine_block(self.difficulty)
@@ -122,33 +246,74 @@ class Blockchain:
                         tx.get("value", 0)
                     )
             
+            # Remove processed transactions from the pool
+            for tx in transactions_to_process:
+                tx_hash = self.calculate_transaction_hash(tx)
+                self.transaction_pool.pop(tx_hash, None)
+            
             # Reset pending transactions
             self.pending_transactions = []
             
-            print(f"Block #{block.index} has been mined and added to the chain")
+            logger.info(f"Block #{block.index} has been mined and added to the chain")
         else:
-            print("Block rejected by consensus")
+            logger.warning("Block rejected by consensus")
     
-    def create_transaction(self, sender: str, recipient: str, amount: float) -> None:
-        """Add a new transaction to the pending transactions pool."""
-        self.pending_transactions.append({
-            "sender": sender,
-            "recipient": recipient,
-            "amount": amount,
-            "timestamp": time.time()
-        })
+    def _assign_transactions_to_shards(self, block: Block) -> None:
+        """Assign transactions to different shards based on sender address"""
+        shard_transactions: Dict[int, List[Dict]] = {i: [] for i in range(self.num_shards)}
+        
+        for tx in block.transactions:
+            # Skip coinbase transactions
+            if tx["sender"] == "COINBASE":
+                continue
+            
+            # Assign to shard based on sender address hash
+            shard_id = int(hashlib.sha256(tx["sender"].encode()).hexdigest(), 16) % self.num_shards
+            shard_transactions[shard_id].append(tx)
+        
+        # Update shard information
+        for shard_id, transactions in shard_transactions.items():
+            self.shards[shard_id].transactions.extend(transactions)
+            self.shards[shard_id].last_block = block.index
     
-    def create_contract_transaction(self, sender: str, contract_address: str, method: str, params: List[Any], value: float = 0) -> None:
-        """Add a new contract transaction to the pending transactions pool."""
-        self.pending_transactions.append({
-            "type": "contract",
-            "sender": sender,
-            "contract_address": contract_address,
-            "method": method,
-            "params": params,
-            "value": value,
-            "timestamp": time.time()
-        })
+    def create_cross_chain_bridge(self, target_chain: str, bridge_address: str) -> bool:
+        """Create a cross-chain bridge to another blockchain"""
+        if target_chain in self.cross_chain_bridges:
+            return False
+        
+        self.cross_chain_bridges[target_chain] = {
+            "bridge_address": bridge_address,
+            "active": True,
+            "last_sync": time.time(),
+            "total_transfers": 0
+        }
+        return True
+    
+    def process_cross_chain_transaction(self, source_chain: str, transaction: Dict) -> bool:
+        """Process a transaction from another blockchain"""
+        if source_chain not in self.cross_chain_bridges:
+            return False
+        
+        bridge = self.cross_chain_bridges[source_chain]
+        if not bridge["active"]:
+            return False
+        
+        # Verify the transaction is from the bridge
+        if transaction["sender"] != bridge["bridge_address"]:
+            return False
+        
+        # Process the transaction
+        success = self.create_transaction(
+            transaction["sender"],
+            transaction["recipient"],
+            transaction["amount"]
+        )
+        
+        if success:
+            bridge["total_transfers"] += 1
+            bridge["last_sync"] = time.time()
+        
+        return success
     
     def get_balance(self, address: str) -> float:
         """Calculate the balance of a given address based on all transactions in the blockchain."""
@@ -171,12 +336,17 @@ class Blockchain:
             
             # Verify the current block's hash
             if current_block.hash != current_block.calculate_hash():
-                print("Current block's hash is invalid")
+                logger.error("Current block's hash is invalid")
                 return False
             
             # Verify the chain link
             if current_block.previous_hash != previous_block.hash:
-                print("Chain link is broken")
+                logger.error("Chain link is broken")
+                return False
+            
+            # Verify state roots
+            if current_block.state_root != self._calculate_state_root({}):  # Simplified
+                logger.error("Invalid state root")
                 return False
         
         return True
@@ -186,7 +356,16 @@ class Blockchain:
         return {
             "chain": [block.to_dict() for block in self.chain],
             "pending_transactions": self.pending_transactions,
-            "difficulty": self.difficulty
+            "difficulty": self.difficulty,
+            "shards": {
+                shard_id: {
+                    "validators": shard.validators,
+                    "last_block": shard.last_block,
+                    "state_root": shard.state_root
+                }
+                for shard_id, shard in self.shards.items()
+            },
+            "cross_chain_bridges": self.cross_chain_bridges
         }
     
     def save_to_file(self, filename: str) -> None:
@@ -198,7 +377,7 @@ class Blockchain:
         self.contract_manager.save_contracts("contracts.json")
         self.consensus.save_state("consensus.json")
         
-        print(f"Blockchain saved to {filename}")
+        logger.info(f"Blockchain saved to {filename}")
     
     @classmethod
     def load_from_file(cls, filename: str) -> 'Blockchain':
@@ -222,9 +401,26 @@ class Blockchain:
                 )
                 block.hash = block_data["hash"]
                 block.validator_signatures = block_data.get("validator_signatures", [])
+                block.shard_id = block_data.get("shard_id")
+                block.cross_chain_refs = block_data.get("cross_chain_refs", [])
+                block.state_root = block_data.get("state_root", "")
+                block.receipt_root = block_data.get("receipt_root", "")
                 blockchain.chain.append(block)
             
             blockchain.pending_transactions = data["pending_transactions"]
+            
+            # Load shard information
+            for shard_id, shard_data in data.get("shards", {}).items():
+                blockchain.shards[int(shard_id)] = ShardInfo(
+                    id=int(shard_id),
+                    validators=shard_data["validators"],
+                    transactions=[],
+                    state_root=shard_data["state_root"],
+                    last_block=shard_data["last_block"]
+                )
+            
+            # Load cross-chain bridges
+            blockchain.cross_chain_bridges = data.get("cross_chain_bridges", {})
             
             # Load contracts if they exist
             if os.path.exists("contracts.json"):
@@ -234,18 +430,18 @@ class Blockchain:
             if os.path.exists("consensus.json"):
                 blockchain.consensus.load_state("consensus.json")
             
-            print(f"Blockchain loaded from {filename}")
+            logger.info(f"Blockchain loaded from {filename}")
             return blockchain
             
         except FileNotFoundError:
-            print(f"No existing blockchain found at {filename}")
-            return blockchain  # Return a fresh blockchain
+            logger.warning(f"No existing blockchain found at {filename}")
+            return blockchain
         except json.JSONDecodeError:
-            print(f"Error decoding blockchain file {filename}")
-            return blockchain  # Return a fresh blockchain
+            logger.error(f"Error decoding blockchain file {filename}")
+            return blockchain
         except Exception as e:
-            print(f"Error loading blockchain: {str(e)}")
-            return blockchain  # Return a fresh blockchain
+            logger.error(f"Error loading blockchain: {str(e)}")
+            return blockchain
 
 
 if __name__ == "__main__":

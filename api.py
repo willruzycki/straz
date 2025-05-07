@@ -134,7 +134,7 @@ def get_wallet(address):
     balance = blockchain.get_balance(address)
     return jsonify({"address": address, "balance": balance})
 
-@app.route("h/api/contracts", methods=["POST"])
+@app.route("/api/contracts", methods=["POST"])
 def deploy_contract():
     """Deploy a new smart contract"""
     logger.debug("Handling /api/contracts POST request")

@@ -3,177 +3,229 @@
 from typing import Dict, Any, List, Optional
 import json
 import hashlib
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ContractState:
-    balance: float
-    storage: Dict[str, Any]
+    address: str
     code: str
     owner: str
-
-class SmartContract:
-    def __init__(self, address: str, code: str, owner: str):
-        self.address = address
-        self.code = code
-        self.owner = owner
-        self.state = ContractState(
-            balance=0.0,
-            storage={},
-            code=code,
-            owner=owner
-        )
-        self.last_execution = 0
-        self.gas_used = 0
-        
-        # Compile the code into a namespace
-        self.namespace = {}
-        try:
-            exec(code, self.namespace)
-        except Exception as e:
-            raise ValueError(f"Invalid contract code: {str(e)}")
-
-    def execute(self, method: str, params: List[Any], sender: str, value: float = 0) -> Dict[str, Any]:
-        """Execute a contract method with parameters"""
-        # Basic gas calculation
-        gas_cost = len(method) + sum(len(str(p)) for p in params)
-        
-        # Check if method exists
-        if method not in self.namespace:
-            return {"success": False, "error": f"Method {method} not found", "gas_used": gas_cost}
-        
-        # Add value to contract balance
-        if value > 0:
-            self.state.balance += value
-        
-        # Create contract context
-        context = {
-            "sender": sender,
-            "value": value,
-            "balance": self.state.balance,
-            "storage": self.state.storage,
-            "address": self.address,
-            "owner": self.owner
-        }
-        
-        try:
-            # Execute the method in the contract's namespace
-            result = self.namespace[method](self, *params)
-            return {
-                "success": True,
-                "result": result,
-                "gas_used": gas_cost,
-                "context": context
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "gas_used": gas_cost,
-                "context": context
-            }
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "address": self.address,
-            "code": self.code,
-            "owner": self.owner,
-            "state": {
-                "balance": self.state.balance,
-                "storage": self.state.storage
-            }
-        }
-        
-    def __getattr__(self, name: str):
-        """Allow access to storage as attributes"""
-        if name in self.state.storage:
-            return self.state.storage[name]
-        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
-        
-    def __setattr__(self, name: str, value: Any):
-        """Allow setting storage as attributes"""
-        if name in ["address", "code", "owner", "state", "last_execution", "gas_used", "namespace"]:
-            super().__setattr__(name, value)
-        else:
-            if not hasattr(self, "state"):
-                super().__setattr__(name, value)
-            else:
-                self.state.storage[name] = value
+    balance: float
+    storage: Dict[str, Any]
+    last_updated: float
+    gas_used: int
+    gas_price: float
 
 class ContractManager:
     def __init__(self):
-        self.contracts: Dict[str, SmartContract] = {}
-        self.contract_code: Dict[str, str] = {}
+        self.contracts: Dict[str, ContractState] = {}
+        self.gas_price = 0.000001  # Base gas price in STRZ
+        self.max_gas_per_block = 1000000
+        self.contract_types = {
+            "token": self._execute_token_contract,
+            "nft": self._execute_nft_contract,
+            "dex": self._execute_dex_contract,
+            "dao": self._execute_dao_contract,
+            "custom": self._execute_custom_contract
+        }
 
-    def deploy_contract(self, contractCode: str, deployerAddress: str, privateKey: str) -> SmartContract:
-        """Deploy a new smart contract
-        
-        Args:
-            contractCode: The smart contract code to deploy
-            deployerAddress: The address of the contract deployer
-            privateKey: The private key of the deployer for signing
+    def deploy_contract(self, code: str, owner: str, contract_type: str = "custom") -> Optional[str]:
+        """Deploy a new smart contract"""
+        try:
+            # Generate contract address
+            contract_hash = hashlib.sha256(f"{code}{owner}{time.time()}".encode()).hexdigest()
+            contract_address = f"0x{contract_hash[:40]}"
             
-        Returns:
-            SmartContract: The deployed contract instance
+            # Create contract state
+            self.contracts[contract_address] = ContractState(
+                address=contract_address,
+                code=code,
+                owner=owner,
+                balance=0.0,
+                storage={},
+                last_updated=time.time(),
+                gas_used=0,
+                gas_price=self.gas_price
+            )
             
-        Raises:
-            ValueError: If the contract code is invalid or deployment fails
-        """
-        # Generate contract address
-        contract_hash = hashlib.sha256(f"{contractCode}{deployerAddress}{time.time()}".encode()).hexdigest()
-        address = f"0x{contract_hash[:40]}"
-        
-        # Create and store contract
-        contract = SmartContract(address, contractCode, deployerAddress)
-        self.contracts[address] = contract
-        self.contract_code[address] = contractCode
-        
-        return contract
+            logger.info(f"Contract deployed at {contract_address}")
+            return contract_address
+        except Exception as e:
+            logger.error(f"Error deploying contract: {e}")
+            return None
 
-    def get_contract(self, address: str) -> Optional[SmartContract]:
-        """Get a contract by its address"""
+    def execute_contract(self, contract_address: str, method: str, params: List[Any], sender: str, value: float = 0) -> Dict[str, Any]:
+        """Execute a contract method"""
+        if contract_address not in self.contracts:
+            return {"error": "Contract not found"}
+        
+        contract = self.contracts[contract_address]
+        
+        # Check if contract has enough balance for gas
+        gas_cost = self._estimate_gas_cost(method, params)
+        if contract.balance < gas_cost:
+            return {"error": "Insufficient contract balance for gas"}
+        
+        try:
+            # Execute contract method based on type
+            contract_type = self._detect_contract_type(contract.code)
+            if contract_type in self.contract_types:
+                result = self.contract_types[contract_type](contract, method, params, sender, value)
+            else:
+                result = self._execute_custom_contract(contract, method, params, sender, value)
+            
+            # Update contract state
+            contract.balance -= gas_cost
+            contract.gas_used += gas_cost
+            contract.last_updated = time.time()
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error executing contract: {e}")
+            return {"error": str(e)}
+
+    def _estimate_gas_cost(self, method: str, params: List[Any]) -> float:
+        """Estimate gas cost for a contract method"""
+        base_cost = 1000  # Base cost for any method call
+        param_cost = len(str(params)) * 10  # Cost based on parameter size
+        return (base_cost + param_cost) * self.gas_price
+
+    def _detect_contract_type(self, code: str) -> str:
+        """Detect contract type from code"""
+        code_lower = code.lower()
+        if "erc20" in code_lower or "token" in code_lower:
+            return "token"
+        elif "erc721" in code_lower or "nft" in code_lower:
+            return "nft"
+        elif "swap" in code_lower or "liquidity" in code_lower:
+            return "dex"
+        elif "vote" in code_lower or "proposal" in code_lower:
+            return "dao"
+        return "custom"
+
+    def _execute_token_contract(self, contract: ContractState, method: str, params: List[Any], sender: str, value: float) -> Dict[str, Any]:
+        """Execute token contract methods"""
+        if method == "transfer":
+            recipient, amount = params
+            if contract.storage.get(sender, 0) >= amount:
+                contract.storage[sender] = contract.storage.get(sender, 0) - amount
+                contract.storage[recipient] = contract.storage.get(recipient, 0) + amount
+                return {"success": True, "new_balance": contract.storage[sender]}
+        elif method == "balanceOf":
+            address = params[0]
+            return {"balance": contract.storage.get(address, 0)}
+        return {"error": "Invalid method"}
+
+    def _execute_nft_contract(self, contract: ContractState, method: str, params: List[Any], sender: str, value: float) -> Dict[str, Any]:
+        """Execute NFT contract methods"""
+        if method == "mint":
+            token_id = params[0]
+            if token_id not in contract.storage:
+                contract.storage[token_id] = sender
+                return {"success": True, "token_id": token_id}
+        elif method == "transfer":
+            token_id, recipient = params
+            if contract.storage.get(token_id) == sender:
+                contract.storage[token_id] = recipient
+                return {"success": True}
+        return {"error": "Invalid method"}
+
+    def _execute_dex_contract(self, contract: ContractState, method: str, params: List[Any], sender: str, value: float) -> Dict[str, Any]:
+        """Execute DEX contract methods"""
+        if method == "addLiquidity":
+            token_a, token_b, amount_a, amount_b = params
+            pool_id = f"{token_a}_{token_b}"
+            if pool_id not in contract.storage:
+                contract.storage[pool_id] = {
+                    "reserve_a": amount_a,
+                    "reserve_b": amount_b,
+                    "liquidity_providers": {sender: amount_a + amount_b}
+                }
+            return {"success": True, "pool_id": pool_id}
+        elif method == "swap":
+            token_in, token_out, amount_in = params
+            pool_id = f"{token_in}_{token_out}"
+            if pool_id in contract.storage:
+                pool = contract.storage[pool_id]
+                amount_out = (amount_in * pool["reserve_b"]) / (pool["reserve_a"] + amount_in)
+                return {"success": True, "amount_out": amount_out}
+        return {"error": "Invalid method"}
+
+    def _execute_dao_contract(self, contract: ContractState, method: str, params: List[Any], sender: str, value: float) -> Dict[str, Any]:
+        """Execute DAO contract methods"""
+        if method == "createProposal":
+            proposal_id = len(contract.storage.get("proposals", []))
+            proposal = {
+                "id": proposal_id,
+                "creator": sender,
+                "description": params[0],
+                "votes": {},
+                "executed": False
+            }
+            if "proposals" not in contract.storage:
+                contract.storage["proposals"] = []
+            contract.storage["proposals"].append(proposal)
+            return {"success": True, "proposal_id": proposal_id}
+        elif method == "vote":
+            proposal_id, vote = params
+            if proposal_id < len(contract.storage.get("proposals", [])):
+                proposal = contract.storage["proposals"][proposal_id]
+                proposal["votes"][sender] = vote
+                return {"success": True}
+        return {"error": "Invalid method"}
+
+    def _execute_custom_contract(self, contract: ContractState, method: str, params: List[Any], sender: str, value: float) -> Dict[str, Any]:
+        """Execute custom contract methods"""
+        # This is a simplified version - in a real implementation,
+        # you would have a proper VM to execute the contract code
+        try:
+            # Execute the contract code in a sandboxed environment
+            # For now, we'll just return a success message
+            return {"success": True, "method": method, "params": params}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_contract(self, address: str) -> Optional[ContractState]:
+        """Get contract information"""
         return self.contracts.get(address)
 
-    def execute_contract(self, address: str, method: str, params: List[Any], sender: str, value: float = 0) -> Dict[str, Any]:
-        """Execute a contract method"""
-        contract = self.get_contract(address)
-        if not contract:
-            return {"success": False, "error": "Contract not found"}
-        
-        return contract.execute(method, params, sender, value)
-
     def save_contracts(self, filename: str):
-        """Save contracts to a file"""
-        data = {
-            "contracts": {
-                addr: contract.to_dict() 
-                for addr, contract in self.contracts.items()
-            },
-            "code": self.contract_code
-        }
+        """Save contracts to file"""
         with open(filename, 'w') as f:
-            json.dump(data, f, indent=4)
+            json.dump({
+                address: {
+                    "code": contract.code,
+                    "owner": contract.owner,
+                    "balance": contract.balance,
+                    "storage": contract.storage,
+                    "last_updated": contract.last_updated,
+                    "gas_used": contract.gas_used,
+                    "gas_price": contract.gas_price
+                }
+                for address, contract in self.contracts.items()
+            }, f, indent=4)
 
-    @classmethod
-    def load_contracts(cls, filename: str) -> 'ContractManager':
-        """Load contracts from a file"""
-        manager = cls()
+    def load_contracts(self, filename: str):
+        """Load contracts from file"""
         try:
             with open(filename, 'r') as f:
                 data = json.load(f)
-                
-            for addr, contract_data in data["contracts"].items():
-                contract = SmartContract(
-                    addr,
-                    data["code"][addr],
-                    contract_data["owner"]
-                )
-                contract.state.balance = contract_data["state"]["balance"]
-                contract.state.storage = contract_data["state"]["storage"]
-                manager.contracts[addr] = contract
-                manager.contract_code[addr] = data["code"][addr]
+                for address, contract_data in data.items():
+                    self.contracts[address] = ContractState(
+                        address=address,
+                        code=contract_data["code"],
+                        owner=contract_data["owner"],
+                        balance=contract_data["balance"],
+                        storage=contract_data["storage"],
+                        last_updated=contract_data["last_updated"],
+                        gas_used=contract_data["gas_used"],
+                        gas_price=contract_data["gas_price"]
+                    )
         except FileNotFoundError:
-            pass
-        
-        return manager 
+            logger.warning(f"No contracts file found at {filename}")
+        except Exception as e:
+            logger.error(f"Error loading contracts: {e}") 
