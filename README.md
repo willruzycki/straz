@@ -1,106 +1,56 @@
-# Straz (STRZ)
+# Straz Blockchain
 
-Straz is a privacy-focused cryptocurrency based on Bitcoin Core, designed for secure and private transactions.
+A Python-based blockchain implementation with smart contract support and proof-of-stake consensus.
 
-## Parameters
+## Features
 
-- **Coin Name:** Straz
-- **Ticker:** STRZ
-- **Block Reward:** 50 STRZ per block
-- **Halving Interval:** 210,000 blocks (≈4 years at 10 min block time)
-- **Block Time:** 600 seconds (10 min)
-- **Coinbase Maturity:** 100 blocks
-- **Max Supply:** 21,000,000 STRZ
-- **P2P Port:** 18444
-- **RPC Port:** 18443
-- **Magic Bytes:** 0xfa, 0xce, 0xb0, 0x0c
-- **Address Prefix:** 63 (addresses start with "S")
-- **Bech32 Prefix:** stz
+- Blockchain implementation with proof-of-work mining
+- Smart contract support
+- Wallet management
+- RESTful API interface
+- Proof-of-stake consensus mechanism
 
-## Genesis Block
-
-- **Timestamp:** May 5, 2025 00:00:00 UTC (Unix: 1748736000)
-- **Message:** "Straz Genesis Block – Privacy & Payments, 2025-05-05"
-- **Initial Difficulty:** 0x1d00ffff
-
-## Building from Source
-
-### Prerequisites
-
-- Git
-- Build essentials (gcc, g++, make)
-- Berkeley DB 4.8
-- Boost libraries
-- libevent
-- ZeroMQ
-- Other Bitcoin Core dependencies
-
-### Build Instructions
+## Setup
 
 1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/straz.git
-   cd straz
-   ```
+```bash
+git clone https://github.com/willruzycki/Straz.git
+cd Straz
+```
 
-2. Install dependencies (Ubuntu/Debian):
-   ```bash
-   sudo apt update
-   sudo apt install build-essential libtool autotools-dev automake pkg-config bsdmainutils curl git
-   sudo apt install libevent-dev libboost-system-dev libboost-filesystem-dev libboost-test-dev libboost-thread-dev
-   sudo apt install libminiupnpc-dev libzmq3-dev libprotobuf-dev protobuf-compiler
-   ```
+2. Create and activate a virtual environment:
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
 
-3. Build Berkeley DB 4.8:
-   ```bash
-   ./contrib/install_db4.sh `pwd`
-   export BDB_PREFIX="$(pwd)/db4"
-   ```
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-4. Build Straz:
-   ```bash
-   ./autogen.sh
-   ./configure BDB_CFLAGS="-I${BDB_PREFIX}/include" BDB_LIBS="-L${BDB_PREFIX}/lib"
-   make -j$(nproc)
-   ```
+4. Run the API server:
+```bash
+python api.py
+```
 
-## Running a Node
+The server will start on `http://localhost:5002`
 
-1. Create a data directory:
-   ```bash
-   mkdir -p ~/.straz
-   ```
+## API Endpoints
 
-2. Create a configuration file:
-   ```bash
-   echo "rpcuser=your_username
-   rpcpassword=your_password
-   " > ~/.straz/straz.conf
-   ```
-
-3. Start the daemon:
-   ```bash
-   ./src/strazd -daemon
-   ```
-
-## Mining
-
-To mine Straz, you'll need a CPU miner that supports SHA256d. The recommended miner is cpuminer.
-
-1. Install cpuminer:
-   ```bash
-   git clone https://github.com/pooler/cpuminer.git
-   cd cpuminer
-   ./autogen.sh
-   ./configure CFLAGS="-O3"
-   make
-   ```
-
-2. Start mining:
-   ```bash
-   ./minerd --url=http://127.0.0.1:18443/ --user=your_username --pass=your_password --algo=sha256d
-   ```
+- `GET /` - List all available routes
+- `GET /api/blockchain` - Get blockchain status
+- `GET /api/block/<index>` - Get block by index
+- `POST /api/transaction` - Create a new transaction
+- `POST /api/mine` - Mine a new block
+- `POST /api/wallet` - Create a new wallet
+- `GET /api/wallet/<address>` - Get wallet balance
+- `POST /api/contracts` - Deploy a new smart contract
+- `GET /api/contract/<address>` - Get contract information
+- `POST /api/contract/transaction` - Create a contract transaction
+- `POST /api/validator` - Register a new validator
+- `GET /api/validator/<address>` - Get validator information
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+MIT 
