@@ -12,6 +12,8 @@ from zk_quantum import ZKRollup, QuantumResistantCrypto, ZKTransaction
 import os
 import logging
 from dataclasses import dataclass
+from quantum_crypto import AdvancedQuantumCrypto, QuantumKeyPair
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +98,7 @@ class Blockchain:
         self.min_transaction_fee = 0.001  # Minimum fee in STRZ
         
         # Initialize quantum-resistant cryptography
-        self.quantum_crypto = QuantumResistantCrypto()
+        self.quantum_crypto = AdvancedQuantumCrypto()
         
         # Sharding configuration
         self.num_shards = 4
@@ -116,6 +118,8 @@ class Blockchain:
         
         # Create the genesis block
         self.create_genesis_block()
+        
+        self.validator_keys = {}  # Store validator quantum key pairs
     
     def create_genesis_block(self) -> None:
         """Create the genesis block for the blockchain."""
@@ -207,7 +211,7 @@ class Blockchain:
             logger.error(f"Error verifying transaction signature: {e}")
             return False
 
-    def create_transaction(self, sender: str, recipient: str, amount: float, fee: float = 0.001, use_zk: bool = False) -> bool:
+    def create_transaction(self, sender: str, recipient: str, amount: float, fee: float = 0.001, use_zk: bool = False, use_quantum: bool = True) -> bool:
         """Add a new transaction to the pending transactions pool."""
         if fee < self.min_transaction_fee:
             return False
@@ -245,6 +249,35 @@ class Blockchain:
                     if zk_rollup.add_transaction_to_batch(zk_tx):
                         transaction["zk_proof"] = proof
                         transaction["is_zk"] = True
+        
+        if use_quantum:
+            # Generate quantum key pair if not exists
+            if sender not in self.validator_keys:
+                self.validator_keys[sender] = self.quantum_crypto.generate_quantum_key_pair()
+            
+            # Create transaction
+            transaction = {
+                "sender": sender,
+                "recipient": recipient,
+                "amount": amount,
+                "fee": fee,
+                "timestamp": time.time()
+            }
+            
+            # Sign with multiple quantum-resistant algorithms
+            message = f"{sender}{recipient}{amount}".encode()
+            signatures = self.quantum_crypto.multi_sign(
+                message,
+                self.validator_keys[sender]
+            )
+            
+            # Store signatures in transaction
+            transaction["signature"] = json.dumps({
+                'signatures': {
+                    k: base64.b64encode(v).decode()
+                    for k, v in signatures.items()
+                }
+            })
         
         if self.validate_transaction(transaction):
             tx_hash = self.calculate_transaction_hash(transaction)
