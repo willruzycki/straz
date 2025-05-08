@@ -1,35 +1,67 @@
 import pytest
-import sys
-import os
+import time
+from src.blockchain import Blockchain
+from src.wallet import Wallet, WalletManager
 
-# Add the project root to the Python path
-# This allows us to import modules from the root directory (e.g., blockchain.py)
-# when running pytest from the root directory.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+@pytest.fixture
+def blockchain_instance():
+    """Create a fresh blockchain instance for testing"""
+    return Blockchain(difficulty=2)  # Use lower difficulty for faster tests
 
-# Attempt to import from blockchain.py
-# We'll need to know the actual classes/functions to import later.
-# For now, let's assume there's a Block and Blockchain class.
-# from blockchain import Block, Blockchain # Placeholder
+@pytest.fixture
+def wallet_manager():
+    """Create a fresh wallet manager for testing"""
+    return WalletManager()
 
-# Example: Fixture for a sample block (you'll customize this)
-# @pytest.fixture
-# def sample_block():
-#     # Replace with actual Block creation logic from your blockchain.py
-#     # return Block(index=1, previous_hash="0", timestamp=time.time(), data="Sample Block", nonce=0)
-#     pass
+def test_blockchain_initialization(blockchain_instance):
+    """Test that a new blockchain is properly initialized"""
+    assert len(blockchain_instance.chain) == 1  # Should have genesis block
+    assert blockchain_instance.difficulty == 2
+    assert blockchain_instance.pending_transactions == []
 
-# Example: Fixture for a blockchain instance
-# @pytest.fixture
-# def blockchain_instance():
-#     # Replace with actual Blockchain instantiation
-#     # bc = Blockchain()
-#     # return bc
-#     pass
+def test_add_transaction(blockchain_instance, wallet_manager):
+    """Test adding a transaction to the blockchain"""
+    # Create two wallets
+    wallet1 = wallet_manager.create_wallet()
+    wallet2 = wallet_manager.create_wallet()
+    
+    # Add a transaction
+    success = blockchain_instance.create_transaction(
+        wallet1.address,
+        wallet2.address,
+        1.0,  # amount
+        0.001  # fee
+    )
+    
+    assert success
+    assert len(blockchain_instance.pending_transactions) == 1
+    tx = blockchain_instance.pending_transactions[0]
+    assert tx.sender == wallet1.address
+    assert tx.recipient == wallet2.address
+    assert tx.amount == 1.0
+    assert tx.fee == 0.001
 
-def test_example_placeholder():
-    """A placeholder test to ensure pytest is set up."""
-    assert True
+def test_mine_pending_transactions(blockchain_instance, wallet_manager):
+    """Test mining pending transactions"""
+    # Create wallets and add a transaction
+    wallet1 = wallet_manager.create_wallet()
+    wallet2 = wallet_manager.create_wallet()
+    blockchain_instance.create_transaction(
+        wallet1.address,
+        wallet2.address,
+        1.0,
+        0.001
+    )
+    
+    # Mine the transaction
+    blockchain_instance.mine_pending_transactions(wallet1.address)
+    
+    # Check that the transaction was mined
+    assert len(blockchain_instance.pending_transactions) == 0
+    assert len(blockchain_instance.chain) == 2  # Genesis block + new block
+    
+    # Check that the miner received the reward
+    assert blockchain_instance.get_balance(wallet1.address) > 0
 
 # More tests will be added here, for example:
 # def test_block_creation(sample_block):
