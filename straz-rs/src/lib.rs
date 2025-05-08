@@ -32,4 +32,15 @@ pub type Result<T> = std::result::Result<T, StrazError>;
 pub use blockchain::{Block, Transaction, Blockchain};
 pub use crypto::{KeyPair, PublicKey, PrivateKey};
 pub use consensus::Consensus;
-pub use network::Node; 
+pub use network::Node;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_error_handling() {
+        let error = StrazError::Blockchain("Test error".to_string());
+        assert!(error.to_string().contains("Test error"));
+    }
+} 

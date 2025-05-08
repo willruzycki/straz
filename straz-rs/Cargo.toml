@@ -1,9 +1,9 @@
 [package]
-name = "straz"
+name = "straz-rs"
 version = "0.1.0"
 edition = "2021"
 authors = ["William Ruzycki"]
-description = "A post-quantum and quantum-resistant blockchain with ZK-rollup support"
+description = "A quantum-resistant blockchain with ZK-rollup support"
 
 [dependencies]
 # Core dependencies
@@ -11,13 +11,22 @@ tokio = { version = "1.36", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
+log = "0.4"
+env_logger = "0.11"
+futures = "0.3"
+async-trait = "0.1"
+bytes = "1.5"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Crypto dependencies
 ring = "0.17"
 sha3 = "0.10"
-rand = "0.8"
 aes-gcm = "0.10"
 ed25519-dalek = "2.1"
 x25519-dalek = "2.0"
@@ -29,9 +38,10 @@ blake3 = "1.5"
 [dev-dependencies]
 tokio-test = "0.4"
 criterion = "0.5"
+mockall = "0.12"
 
 [[bench]]
-name = "crypto_benchmarks"
+name = "blockchain_bench"
 harness = false
 
 [profile.release]

@@ -36,4 +36,32 @@ ENV/
 # Project specific
 straz_blockchain.json
 wallets/
-*.log 
+*.log
+
+# Rust specific
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Environment
+.env.local
+
+# Debug files
+*.log
+*.pdb
+
+# Build artifacts
+/dist/
+/build/
+
+# Test coverage
+/coverage/
+.coverage
+htmlcov/
+
+# Dependencies
+node_modules/ 
