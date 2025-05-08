@@ -90,21 +90,55 @@ def get_block(block_index):
 def create_transaction():
     """Create a new transaction"""
     logger.debug("Handling /api/transaction POST request")
-    data = request.get_json()
-    required_fields = ["sender", "recipient", "amount"]
     
-    if not all(field in data for field in required_fields):
-        return jsonify({"error": "Missing required fields"}), 400
-        
+    # Use silent=True to handle malformed JSON gracefully
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+    
+    # Check for required fields
+    required_fields = ["sender", "recipient", "amount"]
+    missing_fields = [field for field in required_fields if field not in data]
+    if missing_fields:
+        return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+    
+    # Type checking
+    if not isinstance(data["sender"], str):
+        return jsonify({"error": "Field 'sender' must be a string"}), 400
+    if not isinstance(data["recipient"], str):
+        return jsonify({"error": "Field 'recipient' must be a string"}), 400
+    
+    # Check if amount is a number and positive
     try:
-        # Check if this is a ZK transaction
-        use_zk = data.get("use_zk", False)
-        
+        amount = float(data["amount"])
+        if amount <= 0:
+            return jsonify({"error": "Field 'amount' must be a positive number"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"error": "Field 'amount' must be a number"}), 400
+    
+    # Check fee if provided
+    fee = 0.001 # Default fee
+    if "fee" in data:
+        try:
+            fee = float(data["fee"])
+            if fee < 0:
+                return jsonify({"error": "Field 'fee' must be a non-negative number"}), 400
+        except (ValueError, TypeError):
+            return jsonify({"error": "Field 'fee' must be a number"}), 400
+    
+    # Check use_zk if provided
+    use_zk = False
+    if "use_zk" in data:
+        if not isinstance(data["use_zk"], bool):
+            return jsonify({"error": "Field 'use_zk' must be a boolean"}), 400
+        use_zk = data["use_zk"]
+    
+    try:
         success = blockchain.create_transaction(
             data["sender"],
             data["recipient"],
-            float(data["amount"]),
-            float(data.get("fee", 0.001)),
+            amount,
+            fee,
             use_zk=use_zk
         )
         
@@ -118,6 +152,7 @@ def create_transaction():
             return jsonify(response), 201
         return jsonify({"error": "Transaction validation failed"}), 400
     except Exception as e:
+        logger.error(f"Error creating transaction: {str(e)}")
         return jsonify({"error": str(e)}), 400
 
 @app.route("/api/mine", methods=["POST"])
