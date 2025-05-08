@@ -6,9 +6,9 @@ import time
 import binascii
 from typing import List, Dict, Any, Optional
 import struct
-from smart_contract import ContractManager
-from consensus import Consensus
-from zk_quantum import ZKRollup, QuantumResistantCrypto, ZKTransaction
+from src.smart_contract import ContractManager
+from src.consensus import Consensus
+from src.zk_quantum import ZKRollup, QuantumResistantCrypto, ZKTransaction
 import os
 import logging
 from dataclasses import dataclass
