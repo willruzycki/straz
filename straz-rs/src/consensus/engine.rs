@@ -326,8 +326,27 @@ impl ConsensusEngine {
 
             if current_block_votes.len() >= required_votes {
                 println!("Block E:{}, R:{} finalized with {} votes!", epoch, round, current_block_votes.len());
-                // TODO: Apply block to blockchain state
-                // self.blockchain.apply_block(proposal.block.clone()).await?;
+                
+                // Apply block to blockchain state
+                // Assuming `proposal.block` is Arc<Block>
+                let block_to_apply = proposal.block.clone(); 
+                match crate::blockchain::apply_block(&block_to_apply) { // Pass by reference
+                    Ok(receipt) => {
+                        log::info!("Block {} applied: {:?}", hex::encode(block_to_apply.hash.clone()), receipt);
+                        // Optionally broadcast events or store receipts
+                        let mut reward_manager_guard = self.reward_manager.write().await;
+                        reward_manager_guard.pay_out(&receipt); // Call pay_out
+                    }
+                    Err(e) => {
+                        log::error!("Failed to apply block {}: {:?}", hex::encode(block_to_apply.hash.clone()), e);
+                        // Slash proposer for invalid block
+                        // Need proposer_pubkey from the proposal
+                        let proposer_pubkey = proposal.proposer_pubkey.clone();
+                        // Assuming SLASH_INVALID_BLOCK_PERCENTAGE or similar constant exists
+                        const SLASH_INVALID_BLOCK_PERCENTAGE: u8 = 10; // Example, define properly
+                        self.handle_slashing(proposer_pubkey, SLASH_INVALID_BLOCK_PERCENTAGE).await?;
+                    }
+                }
 
                 // Record who voted for reward purposes (or penalize who didn't)
                 // This is partially handled by ValidatorSet.record_vote_missed elsewhere.

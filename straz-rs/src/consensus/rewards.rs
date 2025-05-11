@@ -141,4 +141,42 @@ impl RewardManager {
     pub fn get_total_bounties(&self) -> u128 {
         self.total_bounties
     }
-} 
+
+    pub fn pay_out(&mut self, receipt: &crate::blockchain::types::Receipt) {
+        // TODO: Distribute rewards based on receipt.events or validator stats from the epoch.
+        //       This current receipt is for a single block, epoch rewards are usually handled
+        //       at epoch boundaries. This function might be for immediate per-block payouts if any,
+        //       or it could accumulate data for epoch-end payout.
+
+        // For now, as a stub, let's imagine updating some internal balances.
+        // This `balances` map would need to be a field in RewardManager.
+        // HashMap<Address, u128> called `balances`
+        // self.balances = HashMap::new(); // Example: if balances is a field
+
+        log::info!("RewardManager::pay_out called for block producing receipt: {:?}", receipt);
+        log::warn!("RewardManager::pay_out is a STUB and does not yet distribute actual rewards.");
+
+        // Example of interacting with receipt events if they indicated rewards:
+        for event in &receipt.events {
+            if event.event_type == "ValidatorRewardPaid" {
+                // let recipient = event.attributes.iter().find(|(k,_)| k == "recipient").map(|(_,v)| v);
+                // let amount = event.attributes.iter().find(|(k,_)| k == "amount").map(|(_,v)| v.parse::<u128>().ok());
+                // if let (Some(addr), Some(Some(value))) = (recipient, amount) {
+                //     let bal = self.balances.entry(addr.clone()).or_insert(0);
+                //     *bal += value;
+                //     log::info!("Stub: Credited {} with {} from event", addr, value);
+                // }
+            }
+        }
+    }
+}
+// To make the HashMap example work, `balances` would need to be added to `RewardManager` struct:
+// pub struct RewardManager {
+//    rewards: HashMap<(String, u64), ValidatorReward>,
+//    bounties: HashMap<(String, u64), SlashBounty>,
+//    total_rewards: u128,
+//    total_bounties: u128,
+//    balances: HashMap<Address, u128>, // <-- New field
+// }
+// And initialized in new():
+// balances: HashMap::new(), 
