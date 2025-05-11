@@ -6,152 +6,210 @@ mod tests {
     
     #[tokio::test]
     async fn test_validator_registration() {
-        let blockchain = Blockchain::new(4);
-        let consensus = Consensus::new(blockchain, 1000, 10);
-        let keypair = KeyPair::generate();
+        let mut validator_set = ValidatorSet::new();
+        let keypair = KeyPair::new().unwrap();
         
         // Register validator
-        let result = consensus.register_validator(
-            "validator1".to_string(),
-            2000,
-            keypair,
-        ).await;
+        let tx = StakeTx {
+            validator_pubkey: keypair.public_key(),
+            amount: MIN_STAKE,
+            delegatee: None,
+            nonce: 0,
+            signature: vec![],
+        };
         
-        assert!(result.is_ok());
+        validator_set.register_validator(tx).unwrap();
+        assert_eq!(validator_set.validators.len(), 1);
+        assert_eq!(validator_set.total_stake, MIN_STAKE);
         
         // Try registering with insufficient stake
-        let keypair = KeyPair::generate();
-        let result = consensus.register_validator(
-            "validator2".to_string(),
-            500,
-            keypair,
-        ).await;
+        let tx = StakeTx {
+            validator_pubkey: KeyPair::new().unwrap().public_key(),
+            amount: MIN_STAKE - 1,
+            delegatee: None,
+            nonce: 0,
+            signature: vec![],
+        };
         
-        assert!(result.is_err());
+        assert!(validator_set.register_validator(tx).is_err());
     }
     
     #[tokio::test]
-    async fn test_validator_selection() {
-        let blockchain = Blockchain::new(4);
-        let consensus = Consensus::new(blockchain, 1000, 10);
-        
-        // Register multiple validators with different stakes
-        let keypair1 = KeyPair::generate();
-        consensus.register_validator(
-            "validator1".to_string(),
-            2000,
-            keypair1,
-        ).await.unwrap();
-        
-        let keypair2 = KeyPair::generate();
-        consensus.register_validator(
-            "validator2".to_string(),
-            3000,
-            keypair2,
-        ).await.unwrap();
-        
-        // Select validator
-        let validator = consensus.select_validator().await.unwrap();
-        assert!(validator.is_some());
-        
-        // Validator with higher stake should be selected
-        assert_eq!(validator.unwrap().stake, 3000);
-    }
-    
-    #[tokio::test]
-    async fn test_block_validation() {
-        let blockchain = Blockchain::new(4);
-        let consensus = Consensus::new(blockchain, 1000, 10);
-        let keypair = KeyPair::generate();
+    async fn test_validator_unstaking() {
+        let mut validator_set = ValidatorSet::new();
+        let keypair = KeyPair::new().unwrap();
+        let address = hex::encode(&keypair.public_key());
         
         // Register validator
-        consensus.register_validator(
-            "validator1".to_string(),
-            2000,
-            keypair.clone(),
-        ).await.unwrap();
+        let tx = StakeTx {
+            validator_pubkey: keypair.public_key(),
+            amount: MIN_STAKE * 2,
+            delegatee: None,
+            nonce: 0,
+            signature: vec![],
+        };
         
-        // Create and sign a block
-        let mut block = Block::new(
-            1,
-            vec![],
-            "previous_hash".to_string(),
-        );
-        block.sign(&keypair).unwrap();
+        validator_set.register_validator(tx).unwrap();
         
-        // Validate block
-        let validator = consensus.select_validator().await.unwrap().unwrap();
-        let result = consensus.validate_block(&block, &validator).await;
-        assert!(result.unwrap());
+        // Unstake half
+        let tx = UnstakeTx {
+            validator_address: address.clone(),
+            amount: MIN_STAKE,
+            nonce: 0,
+            signature: vec![],
+        };
         
-        // Try validating with tampered block
-        block.hash = "tampered".to_string();
-        let result = consensus.validate_block(&block, &validator).await;
-        assert!(!result.unwrap());
+        validator_set.unstake(tx).unwrap();
+        assert_eq!(validator_set.total_stake, MIN_STAKE);
+        
+        // Try unstaking more than available
+        let tx = UnstakeTx {
+            validator_address: address,
+            amount: MIN_STAKE + 1,
+            nonce: 0,
+            signature: vec![],
+        };
+        
+        assert!(validator_set.unstake(tx).is_err());
     }
     
     #[tokio::test]
-    async fn test_block_processing() {
-        let blockchain = Blockchain::new(4);
-        let consensus = Consensus::new(blockchain, 1000, 10);
-        let keypair = KeyPair::generate();
+    async fn test_active_validator_selection() {
+        let mut validator_set = ValidatorSet::new();
+        let mut keypairs = Vec::new();
         
-        // Register validator
-        consensus.register_validator(
-            "validator1".to_string(),
-            2000,
-            keypair.clone(),
-        ).await.unwrap();
-        
-        // Create and sign a block
-        let mut block = Block::new(
-            1,
-            vec![],
-            "previous_hash".to_string(),
-        );
-        block.sign(&keypair).unwrap();
-        
-        // Process block
-        let result = consensus.process_block(block.clone()).await;
-        assert!(result.is_ok());
-        
-        // Check validator stats
-        let stats = consensus.get_validator_stats("validator1").await.unwrap();
-        assert!(stats.is_some());
-        let stats = stats.unwrap();
-        assert_eq!(stats.total_blocks, 1);
-        assert_eq!(stats.missed_blocks, 0);
-    }
-    
-    #[tokio::test]
-    async fn test_validator_performance() {
-        let blockchain = Blockchain::new(4);
-        let consensus = Consensus::new(blockchain, 1000, 10);
-        let keypair = KeyPair::generate();
-        
-        // Register validator
-        consensus.register_validator(
-            "validator1".to_string(),
-            2000,
-            keypair.clone(),
-        ).await.unwrap();
-        
-        // Create and process multiple blocks
-        for i in 0..5 {
-            let mut block = Block::new(
-                i + 1,
-                vec![],
-                "previous_hash".to_string(),
-            );
-            block.sign(&keypair).unwrap();
-            consensus.process_block(block).await.unwrap();
+        // Register MAX_VALIDATORS + 1 validators
+        for i in 0..MAX_VALIDATORS + 1 {
+            let keypair = KeyPair::new().unwrap();
+            keypairs.push(keypair.clone());
+            
+            let tx = StakeTx {
+                validator_pubkey: keypair.public_key(),
+                amount: MIN_STAKE + i as u128,
+                delegatee: None,
+                nonce: 0,
+                signature: vec![],
+            };
+            
+            validator_set.register_validator(tx).unwrap();
         }
         
-        // Check validator stats
-        let stats = consensus.get_validator_stats("validator1").await.unwrap();
-        assert!(stats.is_some());
-        let stats = stats.unwrap();
-        assert_eq!(stats.total_blocks, 5);
-        assert_eq!(stats.missed_blocks, 0);
+        // Check that only top MAX_VALIDATORS are active
+        assert_eq!(validator_set.active_validators.len(), MAX_VALIDATORS);
+        
+        // Verify active validators are sorted by stake
+        let mut stakes: Vec<_> = validator_set.validators.values()
+            .filter(|v| v.is_active)
+            .map(|v| v.stake)
+            .collect();
+            
+        stakes.sort_by(|a, b| b.cmp(a));
+        assert_eq!(stakes, validator_set.validators.values()
+            .filter(|v| v.is_active)
+            .map(|v| v.stake)
+            .collect::<Vec<_>>());
+    }
+    
+    #[tokio::test]
+    async fn test_consensus_engine() {
+        let validator_set = ValidatorSet::new();
+        let keypair = KeyPair::new().unwrap();
+        let engine = ConsensusEngine::new(validator_set, keypair);
+        
+        // Test proposer selection
+        let is_proposer = engine.is_proposer(0, 0).await.unwrap();
+        assert!(!is_proposer); // No validators registered
+        
+        // Register validator
+        let mut validator_set = ValidatorSet::new();
+        let tx = StakeTx {
+            validator_pubkey: keypair.public_key(),
+            amount: MIN_STAKE,
+            delegatee: None,
+            nonce: 0,
+            signature: vec![],
+        };
+        
+        validator_set.register_validator(tx).unwrap();
+        let engine = ConsensusEngine::new(validator_set, keypair);
+        
+        // Now should be proposer
+        let is_proposer = engine.is_proposer(0, 0).await.unwrap();
+        assert!(is_proposer);
+    }
+    
+    #[tokio::test]
+    async fn test_voting_and_finality() {
+        let mut validator_set = ValidatorSet::new();
+        let keypair = KeyPair::new().unwrap();
+        
+        // Register validator
+        let tx = StakeTx {
+            validator_pubkey: keypair.public_key(),
+            amount: MIN_STAKE,
+            delegatee: None,
+            nonce: 0,
+            signature: vec![],
+        };
+        
+        validator_set.register_validator(tx).unwrap();
+        let engine = ConsensusEngine::new(validator_set, keypair);
+        
+        // Create and handle proposal
+        let block_hash = vec![1, 2, 3];
+        let proposal = ConsensusMsg::Proposal {
+            epoch: 0,
+            round: 0,
+            block_hash: block_hash.clone(),
+            signature: keypair.sign(&block_hash).unwrap(),
+        };
+        
+        engine.handle_proposal(proposal).await.unwrap();
+        
+        // Handle vote
+        let vote = ConsensusMsg::Vote {
+            epoch: 0,
+            round: 0,
+            block_hash: block_hash.clone(),
+            signature: keypair.sign(&block_hash).unwrap(),
+        };
+        
+        engine.handle_vote(vote).await.unwrap();
+        
+        // Check finality
+        let is_finalized = engine.check_finality(0, 0, &block_hash).await.unwrap();
+        assert!(is_finalized); // Single validator, so 1/1 > 2/3
+    }
+    
+    #[tokio::test]
+    async fn test_slashing() {
+        let mut validator_set = ValidatorSet::new();
+        let keypair = KeyPair::new().unwrap();
+        let address = hex::encode(&keypair.public_key());
+        
+        // Register validator
+        let tx = StakeTx {
+            validator_pubkey: keypair.public_key(),
+            amount: MIN_STAKE * 2,
+            delegatee: None,
+            nonce: 0,
+            signature: vec![],
+        };
+        
+        validator_set.register_validator(tx).unwrap();
+        
+        // Record some votes
+        validator_set.record_vote(&address, &[1, 2, 3]).unwrap();
+        validator_set.record_vote(&address, &[4, 5, 6]).unwrap();
+        
+        // Record missed votes
+        for _ in 0..3 {
+            validator_set.record_missed_vote(&address).unwrap();
+        }
+        
+        // Should be slashed for >50% missed votes
+        let validator = validator_set.validators.get(&address).unwrap();
+        assert!(validator.stake < MIN_STAKE * 2);
+        assert!(!validator.is_active);
     }
 } 
