@@ -1,6 +1,17 @@
-mod block;
-mod transaction;
-mod state;
+pub mod block;
+pub mod transaction;
+pub mod state;
+pub mod types;
+pub mod transaction_error;
+
+#[cfg(test)]
+pub mod tests {
+    pub mod block_tests;
+    pub mod transaction_tests;
+    pub mod state_tests;
+    pub mod apply_block_tests;
+    pub mod vm_execution_tests;
+}
 
 pub use block::Block;
 pub use transaction::Transaction;

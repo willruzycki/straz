@@ -1,11 +1,11 @@
 use crate::Result;
-use crate::blockchain::Block;
-use crate::crypto::{KeyPair, Address, Signature, PublicKey};
-use crate::network::{Network, NetworkMsg};
+use crate::blockchain::{Block, Transaction, Blockchain};
+use crate::crypto::{KeyPair, Address, Signature, PublicKey, Hash, sign_data, verify_signature, StrazError as CryptoError, HybridKey};
+use crate::network::{Network, NetworkMsg, PeerId};
 use super::types::{
     ValidatorSet, ConsensusMsg, Proposal, Vote, SlashTx, StakeTx, UnstakeTx, Validator,
     BLOCK_TIME, EPOCH_LENGTH, MAX_ROUNDS_PER_BLOCK, 
-    SLASH_DOWNTIME_PERCENTAGE, SLASH_DOUBLE_SIGN_PERCENTAGE
+    SLASH_DOWNTIME_PERCENTAGE, SLASH_DOUBLE_SIGN_PERCENTAGE, SlashReason, ConsensusError
 };
 use super::vrf::VRF;
 use super::rewards::{RewardManager, ValidatorReward, SlashBounty, REPORTING_BOUNTY};
@@ -13,6 +13,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, timeout};
+use log::{info, warn, error};
+use tokio::sync::mpsc::Sender;
+use crate::vm::disassembler::{disassemble_corrected as disassemble_bytecode, DisassemblyError};
 
 #[derive(Debug, Clone)]
 pub struct ConsensusEngine {
@@ -26,10 +29,12 @@ pub struct ConsensusEngine {
     reward_manager: Arc<RwLock<RewardManager>>,
     // To prevent processing the same slash evidence multiple times
     processed_slash_evidence: Arc<RwLock<HashSet<Vec<u8>>>>,
+    current_validator_key: Arc<HybridKey>,
+    network_sender: Sender<NetworkMsg>,
 }
 
 impl ConsensusEngine {
-    pub fn new(validator_set: ValidatorSet, keypair: KeyPair, network: Network) -> Self {
+    pub fn new(validator_set: ValidatorSet, keypair: KeyPair, network: Network, network_sender: Sender<NetworkMsg>) -> Self {
         let shared_validator_set = Arc::new(RwLock::new(validator_set));
         Self {
             validator_set: shared_validator_set.clone(),
@@ -40,6 +45,8 @@ impl ConsensusEngine {
             vrf: Arc::new(RwLock::new(VRF::new(keypair, shared_validator_set))),
             reward_manager: Arc::new(RwLock::new(RewardManager::new())),
             processed_slash_evidence: Arc::new(RwLock::new(HashSet::new())),
+            current_validator_key: Arc::new(HybridKey::new()),
+            network_sender,
         }
     }
 
@@ -194,7 +201,7 @@ impl ConsensusEngine {
         network.broadcast_consensus(msg).await
     }
 
-    pub async fn handle_proposal(&self, proposal: Proposal) -> Result<()> {
+    async fn handle_proposal(&self, proposal: Proposal) -> Result<()> {
         println!("Node {:?} received proposal for E:{}, R:{}", self.keypair.public_key_short(), proposal.epoch, proposal.round);
         // TODO: Validate block content (transactions, state transitions)
         let proposer_kp = KeyPair::from_public_key(&proposal.proposer_pubkey)?;
