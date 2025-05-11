@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::blockchain::Transaction;
+use crate::crypto::PublicKey;
 use serde::{Serialize, Deserialize};
 use sha3::{Sha3_256, Digest};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,10 +15,11 @@ pub struct Block {
     pub nonce: u64,
     pub difficulty: u32,
     pub merkle_root: String,
+    pub proposer: PublicKey,
 }
 
 impl Block {
-    pub fn new(index: u64, transactions: Vec<Transaction>, previous_hash: String) -> Self {
+    pub fn new(index: u64, transactions: Vec<Transaction>, previous_hash: String, proposer: PublicKey) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -34,6 +36,7 @@ impl Block {
             nonce: 0,
             difficulty: 0,
             merkle_root,
+            proposer,
         };
         
         block.hash = block.calculate_hash().unwrap();
@@ -48,8 +51,12 @@ impl Block {
             0,
         )];
         
-        let mut block = Self::new(0, transactions, "0".to_string());
-        block.hash = block.calculate_hash().unwrap();
+        let genesis_proposer_pk = PublicKey {
+            key: vec![0; 32],
+            algorithm: "dummy_genesis".to_string(),
+        };
+
+        let mut block = Self::new(0, transactions, "0".to_string(), genesis_proposer_pk);
         block
     }
     
@@ -73,6 +80,7 @@ impl Block {
         hasher.update(self.previous_hash.as_bytes());
         hasher.update(self.nonce.to_le_bytes());
         hasher.update(self.merkle_root.as_bytes());
+        hasher.update(&self.proposer.key);
         
         Ok(hex::encode(hasher.finalize()))
     }

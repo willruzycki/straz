@@ -17,9 +17,12 @@ pub struct Transaction {
     pub is_private: bool,
     pub tx_hash: Hash,
     pub bytecode: Vec<u8>,
+    pub gas_limit: u64,
+    pub gas_price: u128,
 }
 
 impl Transaction {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sender: PublicKey,
         recipient: PublicKey,
@@ -28,6 +31,8 @@ impl Transaction {
         is_private: bool,
         contract_source: Option<&str>,
         key_pair: &HybridKey,
+        gas_limit: u64,
+        gas_price: u128,
     ) -> Result<Self, TransactionError> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         
@@ -48,6 +53,8 @@ impl Transaction {
             is_private,
             tx_hash: Hash([0; 32]),
             bytecode: bytecode.clone(),
+            gas_limit,
+            gas_price,
         };
 
         let tx_bytes_for_hash = preliminary_tx.to_bytes_for_hashing();
@@ -71,6 +78,8 @@ impl Transaction {
         bytes.extend_from_slice(&self.timestamp.to_be_bytes());
         bytes.push(self.is_private as u8);
         bytes.extend_from_slice(&self.bytecode);
+        bytes.extend_from_slice(&self.gas_limit.to_be_bytes());
+        bytes.extend_from_slice(&self.gas_price.to_be_bytes());
         bytes
     }
 
@@ -82,6 +91,7 @@ impl Transaction {
         self.sender.verify(&self.tx_hash.0, &self.signature)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_and_sign(
         sender_pk: PublicKey,
         recipient_pk: PublicKey,
@@ -90,9 +100,11 @@ impl Transaction {
         is_private: bool,
         contract_source: Option<&str>,
         key_pair: &HybridKey,
+        gas_limit: u64,
+        gas_price: u128,
     ) -> Result<Self, TransactionError> {
-        if amount == 0 {
-            return Err(TransactionError::InvalidAmount);
+        if gas_limit == 0 && !contract_source.unwrap_or("").is_empty() {
+            return Err(TransactionError::InvalidBytecode("Gas limit must be > 0 for contracts".to_string()));
         }
 
         Self::new(
@@ -103,6 +115,8 @@ impl Transaction {
             is_private,
             contract_source,
             key_pair,
+            gas_limit,
+            gas_price,
         )
     }
 }
@@ -135,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transaction_creation_and_hashing() {
+    fn test_transaction_creation_with_gas() {
         let key_pair1 = mock_hybrid_keypair();
         let pk1 = mock_public_key_from_hybrid(&key_pair1);
         let key_pair2 = mock_hybrid_keypair();
@@ -149,9 +163,13 @@ mod tests {
             false,
             Some("PUSH 1; ADD; STOP"),
             &key_pair1,
+            20000,
+            100,
         ).unwrap();
 
         assert!(!tx.bytecode.is_empty());
+        assert_eq!(tx.gas_limit, 20000);
+        assert_eq!(tx.gas_price, 100);
         let hash1 = tx.hash();
         
         let tx_recreated_for_hash_check = Transaction {
@@ -164,6 +182,8 @@ mod tests {
             is_private: tx.is_private,
             tx_hash: Hash([0;32]),
             bytecode: tx.bytecode.clone(),
+            gas_limit: tx.gas_limit,
+            gas_price: tx.gas_price,
         };
         let bytes_for_hash = tx_recreated_for_hash_check.to_bytes_for_hashing();
         let re_hash = hash_data(&bytes_for_hash);
@@ -186,6 +206,8 @@ mod tests {
             false,
             None,
             &key_pair,
+            0,
+            0,
         ).unwrap();
         assert!(tx.bytecode.is_empty());
         assert!(tx.verify_signature().unwrap());
@@ -205,6 +227,8 @@ mod tests {
             false,
             Some("PUSH BAD_LITERAL"),
             &key_pair,
+            0,
+            0,
         );
         assert!(matches!(result, Err(TransactionError::InvalidBytecode(_))));
     }

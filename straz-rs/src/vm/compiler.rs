@@ -1,27 +1,34 @@
 use std::collections::HashMap;
 use std::fmt;
 use crate::vm::parser::{Lexer, Parser, Instr, ParseError};
+use strum_macros::FromRepr;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, FromRepr)]
 #[repr(u8)]
 pub enum OpCode {
+    Stop = 0x00,
+    // Arithmetic
     Add = 0x01,
     Sub = 0x02,
     Mul = 0x03,
     Div = 0x04,
+    // Stack & Memory
     Push = 0x10, // Expects 8-byte i64 immediate
     Pop = 0x11,
-    Load = 0x12, // Placeholder, needs operand (e.g. address or var name)
-    Store = 0x13, // Placeholder, needs operand
-    Hash = 0x20,  // Placeholder, needs operand (data to hash)
-    Sign = 0x21,  // Placeholder
-    Verify = 0x22, // Placeholder
-    Jump = 0x30,  // Expects 4-byte u32 relative offset or absolute address
-    JumpI = 0x31, // Expects 4-byte u32 relative offset or absolute address
-    Call = 0x32, // Expects 4-byte u32 relative offset or absolute address
+    Load = 0x12, // Expects 1-byte len + identifier string
+    Store = 0x13, // Expects 1-byte len + identifier string
+    // Crypto (Placeholders)
+    Hash = 0x20,  
+    Sign = 0x21,  
+    Verify = 0x22, 
+    // Control Flow
+    Jump = 0x30,  // Expects 4-byte u32 absolute address
+    JumpI = 0x31, // Expects 4-byte u32 absolute address
+    Call = 0x32, // Expects 4-byte u32 absolute address
     Ret = 0x33,
-    Stop = 0x00,
-    // Note: Labels are resolved during compilation and don't have a direct opcode.
+    // Context Opcodes
+    GetBlockNumber = 0x40,
+    GetSender = 0x41,
 }
 
 // AST Node as defined in the prompt, maps closely to `Instr` for this simple compiler
@@ -69,9 +76,9 @@ impl std::error::Error for CompileError {}
 pub fn compile(instructions: &[Instr]) -> Result<Vec<u8>, CompileError> {
     let mut bytecode = Vec::new();
     let mut label_addresses = HashMap::new();
-    let mut unresolved_jumps = Vec::new(); // Store (bytecode_index_of_operand, label_name)
+    let mut unresolved_jumps_and_calls = Vec::new(); // Store (bytecode_index_of_operand, label_name, current_address_at_instr_start)
 
-    // First pass: identify label addresses and lay out non-jump instructions
+    // First pass: identify label addresses and lay out non-jump/call instructions
     let mut current_address: u32 = 0;
 
     for instr in instructions {
@@ -81,7 +88,7 @@ pub fn compile(instructions: &[Instr]) -> Result<Vec<u8>, CompileError> {
                     return Err(CompileError::LabelRedefinition(name.clone()));
                 }
                 label_addresses.insert(name.clone(), current_address);
-                // Labels themselves don't produce bytecode in this model
+                // Labels themselves don't produce bytecode
             }
             Instr::Add => { bytecode.push(OpCode::Add as u8); current_address += 1; }
             Instr::Sub => { bytecode.push(OpCode::Sub as u8); current_address += 1; }
@@ -112,10 +119,12 @@ pub fn compile(instructions: &[Instr]) -> Result<Vec<u8>, CompileError> {
                 bytecode.extend_from_slice(name_bytes);
                 current_address += name_bytes.len() as u32;
             }
-            Instr::Hash => { bytecode.push(OpCode::Hash as u8); current_address += 1; } // Placeholder
-            Instr::Sign => { bytecode.push(OpCode::Sign as u8); current_address += 1; } // Placeholder
-            Instr::Verify => { bytecode.push(OpCode::Verify as u8); current_address += 1; } // Placeholder
+            Instr::Hash => { bytecode.push(OpCode::Hash as u8); current_address += 1; } 
+            Instr::Sign => { bytecode.push(OpCode::Sign as u8); current_address += 1; } 
+            Instr::Verify => { bytecode.push(OpCode::Verify as u8); current_address += 1; } 
             Instr::Ret => { bytecode.push(OpCode::Ret as u8); current_address += 1; }
+            Instr::GetBlockNumber => { bytecode.push(OpCode::GetBlockNumber as u8); current_address += 1; }
+            Instr::GetSender => { bytecode.push(OpCode::GetSender as u8); current_address += 1; }
             Instr::Stop => { bytecode.push(OpCode::Stop as u8); current_address += 1; }
             Instr::Push(val) => {
                 bytecode.push(OpCode::Push as u8);
@@ -124,27 +133,27 @@ pub fn compile(instructions: &[Instr]) -> Result<Vec<u8>, CompileError> {
             }
             Instr::Jump(label_name) => {
                 bytecode.push(OpCode::Jump as u8);
-                unresolved_jumps.push((bytecode.len(), label_name.clone(), current_address));
+                unresolved_jumps_and_calls.push((bytecode.len(), label_name.clone(), current_address));
                 bytecode.extend_from_slice(&[0u8; 4]); // Placeholder for 4-byte address
                 current_address += 1 + 4;
             }
             Instr::JumpI(label_name) => {
                 bytecode.push(OpCode::JumpI as u8);
-                unresolved_jumps.push((bytecode.len(), label_name.clone(), current_address));
+                unresolved_jumps_and_calls.push((bytecode.len(), label_name.clone(), current_address));
                 bytecode.extend_from_slice(&[0u8; 4]); // Placeholder for 4-byte address
                 current_address += 1 + 4;
             }
             Instr::Call(label_name) => {
                 bytecode.push(OpCode::Call as u8);
-                unresolved_jumps.push((bytecode.len(), label_name.clone(), current_address));
+                unresolved_jumps_and_calls.push((bytecode.len(), label_name.clone(), current_address));
                 bytecode.extend_from_slice(&[0u8; 4]); // Placeholder for 4-byte address
                 current_address += 1 + 4;
             }
         }
     }
 
-    // Second pass: resolve jumps
-    for (patch_idx, label_name, _jump_instr_addr) in unresolved_jumps {
+    // Second pass: resolve jumps and calls
+    for (patch_idx, label_name, _instr_start_addr) in unresolved_jumps_and_calls {
         match label_addresses.get(&label_name) {
             Some(&target_address) => {
                 let offset_bytes = target_address.to_be_bytes();

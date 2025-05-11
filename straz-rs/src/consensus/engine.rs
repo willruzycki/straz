@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::blockchain::{Block, Transaction, Blockchain};
+use crate::blockchain::{Block, Transaction, Blockchain, Receipt as BlockchainReceipt, BlockchainError};
 use crate::crypto::{KeyPair, Address, Signature, PublicKey, Hash, sign_data, verify_signature, StrazError as CryptoError, HybridKey};
 use crate::network::{Network, NetworkMsg, PeerId};
 use super::types::{
@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration, timeout};
-use log::{info, warn, error};
+use log::{info, warn, error, debug};
 use tokio::sync::mpsc::Sender;
 use crate::vm::disassembler::{disassemble_corrected as disassemble_bytecode, DisassemblyError};
 
@@ -31,22 +31,25 @@ pub struct ConsensusEngine {
     processed_slash_evidence: Arc<RwLock<HashSet<Vec<u8>>>>,
     current_validator_key: Arc<HybridKey>,
     network_sender: Sender<NetworkMsg>,
+    blockchain: Arc<RwLock<Blockchain>>,
 }
 
 impl ConsensusEngine {
-    pub fn new(validator_set: ValidatorSet, keypair: KeyPair, network: Network, network_sender: Sender<NetworkMsg>) -> Self {
+    pub fn new(validator_set: ValidatorSet, current_validator_key: Arc<HybridKey>, network: Network, network_sender: Sender<NetworkMsg>, blockchain: Arc<RwLock<Blockchain>>) -> Self {
         let shared_validator_set = Arc::new(RwLock::new(validator_set));
+        let vrf_keypair_for_vrf_init = KeyPair::from(current_validator_key.as_ref().clone());
         Self {
             validator_set: shared_validator_set.clone(),
             proposals: Arc::new(RwLock::new(HashMap::new())),
             votes: Arc::new(RwLock::new(HashMap::new())),
-            keypair: keypair.clone(),
+            keypair: KeyPair::from(current_validator_key.as_ref().clone()),
             network: Arc::new(RwLock::new(network)),
-            vrf: Arc::new(RwLock::new(VRF::new(keypair, shared_validator_set))),
+            vrf: Arc::new(RwLock::new(VRF::new(vrf_keypair_for_vrf_init, shared_validator_set))),
             reward_manager: Arc::new(RwLock::new(RewardManager::new())),
             processed_slash_evidence: Arc::new(RwLock::new(HashSet::new())),
-            current_validator_key: Arc::new(HybridKey::new()),
+            current_validator_key,
             network_sender,
+            blockchain,
         }
     }
 
@@ -143,32 +146,28 @@ impl ConsensusEngine {
     }
 
     async fn propose_block(&self, epoch: u64, round: u64) -> Result<()> {
-        println!("Node {:?} proposing block for E:{}, R:{}", self.keypair.public_key_short(), epoch, round);
+        debug!("Node {:?} proposing block for E:{}, R:{}", self.current_validator_key.public_key().key, epoch, round);
         
-        // TODO: Actual block creation with transactions from mempool
-        // For now, create a block with a dummy transaction that changes with epoch/round
-        let dummy_tx_data = format!("tx_for_epoch_{}_round_{}", epoch, round).into_bytes();
-        let previous_block_hash = self.get_previous_block_hash(epoch, round).await; // Needs implementation
-
-        // Assuming Block::new signature is (index, transactions_data, previous_hash, nonce, difficulty)
-        // The index here is simplified. A real chain would have a proper block height.
-        let block_index = epoch * EPOCH_LENGTH + round; 
+        let blockchain_read_guard = self.blockchain.read().await;
+        let transactions: Vec<Transaction> = Vec::new();
+        let previous_block_hash_str = blockchain_read_guard.get_latest_block_hash_str().await;
+        let block_index = epoch * EPOCH_LENGTH + round;
+        let proposer_pk = self.current_validator_key.public_key();
         let block = Block::new(
             block_index, 
-            vec![dummy_tx_data], // Dummy transaction data 
-            previous_block_hash, // Placeholder for actual previous block hash
-            0, // Nonce - to be set by a mining function if PoW, or 0 for PoS if not used
-            1  // Difficulty - placeholder
+            transactions, 
+            previous_block_hash_str, 
+            proposer_pk.clone()
         ); 
-        let block_hash = block.hash.clone();
+        let block_hash_bytes = hex::decode(&block.hash).map_err(|e| ConsensusError::Other(format!("Failed to decode block hash: {}", e)))?;
         
         let proposal_msg = Proposal {
             epoch,
             round,
-            block_hash: block_hash.clone(),
-            block: Arc::new(block), // Include the block itself
-            proposer_pubkey: self.keypair.public_key(),
-            signature: self.keypair.sign(&block_hash)?,
+            block_hash: block_hash_bytes.clone(),
+            block: Arc::new(block), 
+            proposer_pubkey: proposer_pk,
+            signature: self.current_validator_key.sign(&block_hash_bytes).map_err(ConsensusError::CryptoError)?,
         };
 
         {
@@ -176,7 +175,6 @@ impl ConsensusEngine {
             proposals_guard.insert((epoch, round), proposal_msg.clone());
         }
         
-        // Record proposed block for reward calculation
         {
             let mut vs_guard = self.validator_set.write().await;
             vs_guard.record_block_proposed(&self.keypair.public_key_address()); 
@@ -315,72 +313,59 @@ impl ConsensusEngine {
     }
 
     async fn attempt_finalize_or_next_round(&self, epoch: u64, round: u64) -> Result<()> {
+        debug!("Attempting to finalize block or move to next round for E:{}, R:{}", epoch, round);
+        let required_votes: usize;
+        let total_stake_in_round: u128; 
+        {
+            let vs_guard = self.validator_set.read().await;
+            total_stake_in_round = vs_guard.get_total_stake_of_active_validators();
+            required_votes = ((total_stake_in_round * 2 / 3) + 1) as usize;
+        }
+
         let proposals_guard = self.proposals.read().await;
         if let Some(proposal) = proposals_guard.get(&(epoch, round)) {
             let votes_guard = self.votes.read().await;
-            let mut current_block_votes: HashMap<Address, Signature> = HashMap::new();
-
-            for ((e, r, voter_addr), vote_data) in votes_guard.iter() {
-                if *e == epoch && *r == round && vote_data.block_hash == proposal.block_hash {
-                    current_block_votes.insert(voter_addr.clone(), vote_data.signature.clone());
+            let mut current_block_votes_stake = 0u128;
+            
+            for ((e, r, _voter_addr), vote_obj) in votes_guard.iter() {
+                if *e == epoch && *r == round && vote_obj.block_hash == proposal.block_hash {
+                    let vs_read_guard = self.validator_set.read().await;
+                    if let Some(validator) = vs_read_guard.active_validators.get(&vote_obj.voter_address) {
+                         current_block_votes_stake += validator.stake;
+                    }
                 }
             }
-            drop(votes_guard); // Release votes read lock
+            drop(votes_guard);
 
-            let vs_guard = self.validator_set.read().await;
-            let active_validators_count = vs_guard.active_validators.len();
-            let required_votes = (active_validators_count * 2) / 3 + 1; // 2/3 + 1
+            debug!("Proposal for E:{}, R:{} has {} stake. Required: {}", epoch, round, current_block_votes_stake, (total_stake_in_round * 2 / 3) + 1);
 
-            if current_block_votes.len() >= required_votes {
-                println!("Block E:{}, R:{} finalized with {} votes!", epoch, round, current_block_votes.len());
+            if current_block_votes_stake > (total_stake_in_round * 2 / 3) {
+                info!("Block E:{}, R:{} finalized with sufficient stake ({}/{})!", epoch, round, current_block_votes_stake, total_stake_in_round);
                 
-                // Apply block to blockchain state
-                // Assuming `proposal.block` is Arc<Block>
-                let block_to_apply = proposal.block.clone(); 
-                match crate::blockchain::apply_block(&block_to_apply) { // Pass by reference
+                let finalized_block = Arc::clone(&proposal.block);
+                drop(proposals_guard);
+
+                let blockchain_write_guard = self.blockchain.write().await;
+                match blockchain_write_guard.apply_block_to_state(&finalized_block).await {
                     Ok(receipt) => {
-                        log::info!("Block {} applied: {:?}", hex::encode(block_to_apply.hash.clone()), receipt);
-                        // Optionally broadcast events or store receipts
-                        let mut reward_manager_guard = self.reward_manager.write().await;
-                        reward_manager_guard.pay_out(&receipt); // Call pay_out
+                        info!("Block E:{}, R:{} successfully applied to state. Gas used: {}. New state root: {}", 
+                              epoch, round, receipt.gas_used, receipt.state_root);
+                        
+                        let mut vs_write_guard = self.validator_set.write().await;
+                        vs_write_guard.advance_to_next_round();
+                        return Ok(()); 
                     }
                     Err(e) => {
-                        log::error!("Failed to apply block {}: {:?}", hex::encode(block_to_apply.hash.clone()), e);
-                        // Slash proposer for invalid block
-                        // Need proposer_pubkey from the proposal
-                        let proposer_pubkey = proposal.proposer_pubkey.clone();
-                        // Assuming SLASH_INVALID_BLOCK_PERCENTAGE or similar constant exists
-                        const SLASH_INVALID_BLOCK_PERCENTAGE: u8 = 10; // Example, define properly
-                        self.handle_slashing(proposer_pubkey, SLASH_INVALID_BLOCK_PERCENTAGE).await?;
+                        error!("CRITICAL: Failed to apply finalized block E:{}, R:{} to state: {:?}. System might be in inconsistent state.", 
+                              epoch, round, e);
+                        return Err(ConsensusError::Other(format!("Failed to apply finalized block: {}", e)));
                     }
                 }
-
-                // Record who voted for reward purposes (or penalize who didn't)
-                // This is partially handled by ValidatorSet.record_vote_missed elsewhere.
-                
-                let mut vs_write_guard = self.validator_set.write().await;
-                vs_write_guard.current_round = 0; // Reset round for next block
-                if (epoch * EPOCH_LENGTH + round + 1) % EPOCH_LENGTH == 0 { // Simplified check, needs refinement
-                    println!("End of Epoch {} reached.", epoch);
-                    self.distribute_epoch_rewards(epoch).await?; // Distribute before ending epoch
-                    vs_write_guard.end_epoch_transition();
-                }
-                return Ok(());
             }
-        }
-        drop(proposals_guard); // Release proposals read lock
-
-        // If not finalized, and max rounds reached, reset round and new proposer (implicitly by VRF in next loop)
-        let mut vs_write_guard = self.validator_set.write().await;
-        if round + 1 >= MAX_ROUNDS_PER_BLOCK {
-            println!("Max rounds reached for E:{}, R:{}. Resetting round.", epoch, round);
-            vs_write_guard.current_round = 0;
-            // Potentially penalize validators who didn't vote for the dominant proposal if one existed
-            // This is complex: need to identify dominant proposal if any, then those who didn't vote for it.
-            // For now, liveness faults (missing >50% votes in epoch) are handled at epoch end.
         } else {
-            vs_write_guard.current_round = round + 1;
+            debug!("No proposal found for E:{}, R:{} to attempt finalization.", epoch, round);
         }
+        
         Ok(())
     }
     

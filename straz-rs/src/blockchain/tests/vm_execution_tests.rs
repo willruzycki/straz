@@ -7,6 +7,16 @@ mod vm_execution_tests {
     use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    // Constants for gas costs (mirroring vm/execution.rs for test calculations)
+    const GAS_PUSH: u64 = 1;
+    const GAS_POP: u64 = 1;
+    const GAS_ADD: u64 = 1;
+    const GAS_STORE: u64 = 5;
+    const GAS_LOAD: u64 = 5;
+    const GAS_STOP: u64 = 0;
+    const GAS_GET_BLOCK_NUMBER: u64 = 3;
+    const GAS_GET_SENDER: u64 = 3;
+
     fn mock_hybrid_keypair() -> HybridKey {
         let pqc_kp = PqcKeyPair::generate(); 
         let quantum_kp = QuantumKeyPair::generate();
@@ -18,19 +28,17 @@ mod vm_execution_tests {
     }
 
     #[test]
-    fn test_vm_store_and_load_execution() {
+    fn test_vm_store_and_load_execution_updated() {
         let mut state = State::new();
 
         let contract_creator_kp = mock_hybrid_keypair();
         let contract_creator_pk = mock_public_key(&contract_creator_kp);
         
-        // The contract "address" will be the transaction recipient for simplicity in this test
-        let contract_kp = mock_hybrid_keypair(); // Not strictly needed if contract has no keys itself
+        let contract_kp = mock_hybrid_keypair(); 
         let contract_pk = mock_public_key(&contract_kp);
 
-        // Fund the contract creator's account so they can pay fees
-        let mut creator_account_state = AccountState::new(1000);
-        state.balances.insert(contract_creator_pk.clone(), creator_account_state);
+        let initial_creator_balance: u128 = 1_000_000;
+        state.balances.insert(contract_creator_pk.clone(), AccountState::new(initial_creator_balance));
 
         let assembly_source = r#"
             PUSH 42
@@ -41,50 +49,170 @@ mod vm_execution_tests {
             STOP
         "#;
 
-        // Create a transaction that deploys/runs this code
-        // Sender is creator, recipient is the contract address
+        let gas_limit: u64 = 100_000;
+        let gas_price: u128 = 1;
+        let fee: u64 = 10;
+
         let tx = Transaction::create_and_sign(
-            contract_creator_pk.clone(), // Sender
-            contract_pk.clone(),         // Recipient (contract address)
-            0,                           // Amount (e.g., for contract deployment, no direct value transfer here)
-            10,                          // Fee
-            false,                       // Not private
-            Some(assembly_source),       // Contract source code
-            &contract_creator_kp,        // Signer
+            contract_creator_pk.clone(), 
+            contract_pk.clone(),         
+            0,                           
+            fee,                          
+            false,                       
+            Some(assembly_source),       
+            &contract_creator_kp,
+            gas_limit,
+            gas_price,       
         ).expect("Transaction creation failed");
 
-        // Create a block with this transaction
-        let prev_hash = Hash([0u8; 32]);
-        let block_header = BlockHeader {
-            index: 1,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-            previous_hash: prev_hash,
-            merkle_root: Hash([0u8;32]), // Placeholder for test, real one would be calculated
-            difficulty: 0, // Placeholder
-            nonce: 0, // Placeholder
-        };
-        let block = Block {
-            header: block_header,
-            transactions: vec![tx.clone()],
-            // validator_signature: None, // Assuming this might exist
-        };
-        // Manually set merkle_root if block has a method for it or re-hash
-        // For this test, apply_block_for_test might not strictly need it if it only processes txns.
-
-        // Apply the block to the state
-        match state.apply_block_for_test(&block) {
+        match state.apply_transaction(&tx) {
             Ok(_) => (),
-            Err(e) => panic!("apply_block_for_test failed: {:?}", e),
+            Err(e) => panic!("apply_transaction failed: {:?}", e),
         }
 
-        // Verify storage
-        // The storage is associated with the contract_pk (tx.recipient)
         let stored_value = state.get_account_storage(&contract_pk, "x");
         assert_eq!(stored_value, Some(42), "Value for 'x' should be 42 in contract storage");
+        
+        let expected_gas_used = GAS_PUSH + GAS_STORE + GAS_LOAD + GAS_PUSH + GAS_ADD + GAS_STOP;
+        let expected_cost = fee as u128 + (expected_gas_used as u128 * gas_price);
+        assert_eq!(state.get_balance(&contract_creator_pk), initial_creator_balance - expected_cost);
+        assert_eq!(state.balances.get(&contract_creator_pk).unwrap().nonce, 1);
+    }
 
-        // Optional: Verify the stack of the VM if the VM instance were accessible after run
-        // For this test, checking the persisted storage is the main goal.
-        // If apply_transaction returned the VM state or similar, we could check stack.
-        // For example, after the ADD, the top of stack should be 43.
+    #[test]
+    fn test_vm_success_with_gas() {
+        let mut state = State::new();
+        let sender_kp = mock_hybrid_keypair();
+        let sender_pk = mock_public_key(&sender_kp);
+        let contract_pk = mock_public_key(&mock_hybrid_keypair());
+
+        let initial_sender_balance: u128 = 1_000_000;
+        state.balances.insert(sender_pk.clone(), AccountState::new(initial_sender_balance));
+
+        let assembly_source = "PUSH 10; PUSH 20; ADD; STORE result; STOP";
+        let gas_limit: u64 = 100;
+        let gas_price: u128 = 2;
+        let fee: u64 = 5;
+        let amount: u64 = 0;
+
+        let tx = Transaction::create_and_sign(
+            sender_pk.clone(), contract_pk.clone(), amount, fee, false, 
+            Some(assembly_source), &sender_kp, gas_limit, gas_price
+        ).unwrap();
+
+        assert!(state.apply_transaction(&tx).is_ok());
+
+        let expected_gas_used = GAS_PUSH + GAS_PUSH + GAS_ADD + GAS_STORE + GAS_STOP;
+        assert!(expected_gas_used <= gas_limit, "Test setup error: gas_limit too low for ops");
+
+        let total_cost = amount as u128 + fee as u128 + (expected_gas_used as u128 * gas_price);
+        assert_eq!(state.get_balance(&sender_pk), initial_sender_balance - total_cost);
+        assert_eq!(state.get_account_storage(&contract_pk, "result"), Some(30));
+        assert_eq!(state.balances.get(&sender_pk).unwrap().nonce, 1);
+    }
+
+    #[test]
+    fn test_vm_out_of_gas() {
+        let mut state = State::new();
+        let sender_kp = mock_hybrid_keypair();
+        let sender_pk = mock_public_key(&sender_kp);
+        let contract_pk = mock_public_key(&mock_hybrid_keypair());
+
+        let initial_sender_balance: u128 = 1_000_000;
+        state.balances.insert(sender_pk.clone(), AccountState::new(initial_sender_balance));
+        
+        // PUSH + PUSH + ADD + STORE + STOP = 1+1+1+5+0 = 8 gas units
+        let assembly_source = "PUSH 10; PUSH 20; ADD; STORE result; STOP"; 
+        let gas_limit: u64 = 7; // Set gas_limit just below required
+        let gas_price: u128 = 1;
+        let fee: u64 = 5;
+        let amount: u64 = 0;
+
+        let tx = Transaction::create_and_sign(
+            sender_pk.clone(), contract_pk.clone(), amount, fee, false,
+            Some(assembly_source), &sender_kp, gas_limit, gas_price
+        ).unwrap();
+
+        // apply_transaction should still be Ok, but OutOfGas error is handled internally
+        // and full gas_limit is charged.
+        assert!(state.apply_transaction(&tx).is_ok());
+
+        let total_cost = amount as u128 + fee as u128 + (gas_limit as u128 * gas_price);
+        assert_eq!(state.get_balance(&sender_pk), initial_sender_balance - total_cost);
+        // Storage should not be modified due to OutOfGas
+        assert_eq!(state.get_account_storage(&contract_pk, "result"), None);
+        assert_eq!(state.balances.get(&sender_pk).unwrap().nonce, 1);
+    }
+
+    #[test]
+    fn test_insufficient_balance_for_max_gas() {
+        let mut state = State::new();
+        let sender_kp = mock_hybrid_keypair();
+        let sender_pk = mock_public_key(&sender_kp);
+        let contract_pk = mock_public_key(&mock_hybrid_keypair());
+
+        let assembly_source = "PUSH 1; STOP";
+        let gas_limit: u64 = 100;
+        let gas_price: u128 = 1;
+        let fee: u64 = 5;
+        let amount: u64 = 0;
+        
+        let required_balance = amount as u128 + fee as u128 + (gas_limit as u128 * gas_price);
+        let initial_sender_balance = required_balance - 1; // Just not enough
+
+        state.balances.insert(sender_pk.clone(), AccountState::new(initial_sender_balance));
+
+        let tx = Transaction::create_and_sign(
+            sender_pk.clone(), contract_pk.clone(), amount, fee, false,
+            Some(assembly_source), &sender_kp, gas_limit, gas_price
+        ).unwrap();
+
+        match state.apply_transaction(&tx) {
+            Err(StateError::InsufficientBalance) => (),
+            _ => panic!("Expected InsufficientBalance error"),
+        }
+
+        assert_eq!(state.get_balance(&sender_pk), initial_sender_balance); // Balance unchanged
+        assert_eq!(state.get_account_storage(&contract_pk, "result"), None); // Storage unchanged
+        assert_eq!(state.balances.get(&sender_pk).unwrap().nonce, 0); // Nonce unchanged
+    }
+
+    #[test]
+    fn test_context_opcodes_get_sender_block_number() {
+        let mut state = State::new();
+        let sender_kp = mock_hybrid_keypair();
+        let sender_pk = mock_public_key(&sender_kp);
+        let contract_pk = mock_public_key(&mock_hybrid_keypair());
+
+        let initial_sender_balance: u128 = 1_000_000;
+        state.balances.insert(sender_pk.clone(), AccountState::new(initial_sender_balance));
+
+        let assembly_source = "GETSENDER; STORE s_hash; GETBLOCKNUMBER; STORE b_num; STOP";
+        let gas_limit: u64 = 100;
+        let gas_price: u128 = 1;
+        let fee: u64 = 5;
+
+        let tx = Transaction::create_and_sign(
+            sender_pk.clone(), contract_pk.clone(), 0, fee, false,
+            Some(assembly_source), &sender_kp, gas_limit, gas_price
+        ).unwrap();
+
+        assert!(state.apply_transaction(&tx).is_ok());
+
+        // Calculate expected sender hash (first 8 bytes of hash of sender_pk.key)
+        // Assuming PublicKey.key holds the bytes for hashing, matching vm/execution.rs GetSender
+        let sender_key_bytes = &sender_pk.key; 
+        let expected_sender_hash_full = hash_data(sender_key_bytes);
+        let mut expected_sender_val_bytes = [0u8; 8];
+        expected_sender_val_bytes.copy_from_slice(&expected_sender_hash_full.0[0..8]);
+        let expected_sender_val_i64 = i64::from_be_bytes(expected_sender_val_bytes);
+
+        assert_eq!(state.get_account_storage(&contract_pk, "s_hash"), Some(expected_sender_val_i64));
+        assert_eq!(state.get_account_storage(&contract_pk, "b_num"), Some(0), "Block number should be 0 (placeholder)");
+
+        let expected_gas_used = GAS_GET_SENDER + GAS_STORE + GAS_GET_BLOCK_NUMBER + GAS_STORE + GAS_STOP;
+        let total_cost = fee as u128 + (expected_gas_used as u128 * gas_price);
+        assert_eq!(state.get_balance(&sender_pk), initial_sender_balance - total_cost);
+        assert_eq!(state.balances.get(&sender_pk).unwrap().nonce, 1);
     }
 } 

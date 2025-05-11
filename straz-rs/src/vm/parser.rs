@@ -16,9 +16,11 @@ pub enum Token {
     Verify,
     Jump,
     JumpI, // Jump if true (conditional)
-    Call,  // Added Call for function/contract calls
-    Ret,   // Added Ret for returning from calls
+    Call,  // New: CALL <label>
+    Ret,   // New: RET
     Stop,
+    GetBlockNumber, // New
+    GetSender,      // New
     LabelDecl(String), // Declaration of a label e.g. LOOP:
     // Operands
     Literal(i64),
@@ -45,6 +47,8 @@ impl fmt::Display for Token {
             Token::Call => write!(f, "CALL"),
             Token::Ret => write!(f, "RET"),
             Token::Stop => write!(f, "STOP"),
+            Token::GetBlockNumber => write!(f, "GETBLOCKNUMBER"),
+            Token::GetSender => write!(f, "GETSENDER"),
             Token::LabelDecl(s) => write!(f, "{}:", s),
             Token::Literal(n) => write!(f, "{}", n),
             Token::LabelRef(s) => write!(f, "{}", s),
@@ -68,9 +72,11 @@ pub enum Instr {
     Verify,
     Jump(String),    // Target is a label string, to be resolved later
     JumpI(String),   // Target is a label string
-    Call(String),    // Target is a label string
-    Ret,
+    Call(String),    // New: Target is a label string
+    Ret,             // New
     Stop,
+    GetBlockNumber,  // New
+    GetSender,       // New
     Label(String),   // A label definition
 }
 
@@ -198,6 +204,8 @@ impl<'a> Lexer<'a> {
             "CALL" => Some(Ok(Token::Call)),
             "RET" => Some(Ok(Token::Ret)),
             "STOP" => Some(Ok(Token::Stop)),
+            "GETBLOCKNUMBER" => Some(Ok(Token::GetBlockNumber)),
+            "GETSENDER" => Some(Ok(Token::GetSender)),
             _ => { // If not an opcode, it could be a label reference or a literal if it's a number
                 // Try to parse as a number first (e.g. PUSH 10)
                 // This part is tricky because an identifier could be a label *or* a standalone number if we supported that
@@ -254,16 +262,26 @@ impl<'a> Parser<'a> {
             match token_res {
                 Ok(token) => {
                     let instr = match token.clone() {
+                        // Simple Opcodes (no arguments from parser's perspective here)
                         Token::Add => Instr::Add,
                         Token::Sub => Instr::Sub,
                         Token::Mul => Instr::Mul,
                         Token::Div => Instr::Div,
                         Token::Pop => Instr::Pop,
+                        Token::Hash => Instr::Hash,
+                        Token::Sign => Instr::Sign,
+                        Token::Verify => Instr::Verify,
+                        Token::Ret => Instr::Ret,
+                        Token::Stop => Instr::Stop,
+                        Token::GetBlockNumber => Instr::GetBlockNumber,
+                        Token::GetSender => Instr::GetSender,
+
+                        // Opcodes with arguments
                         Token::LoadIdent => {
                             self.advance_tokens(); // Consume LOAD
                             let ident_token = self.current_token.take().ok_or(ParseError::ExpectedOperand)??;
                             match ident_token {
-                                Token::LabelRef(ident) | Token::Identifier(ident) => Instr::Load(ident),
+                                Token::Identifier(ident) | Token::LabelRef(ident) => Instr::Load(ident),
                                 _ => return Err(ParseError::MalformedLiteral(format!("Expected identifier for LOAD, got {:?}", ident_token))),
                             }
                         }
@@ -271,22 +289,17 @@ impl<'a> Parser<'a> {
                             self.advance_tokens(); // Consume STORE
                             let ident_token = self.current_token.take().ok_or(ParseError::ExpectedOperand)??;
                              match ident_token {
-                                Token::LabelRef(ident) | Token::Identifier(ident) => Instr::Store(ident),
+                                Token::Identifier(ident) | Token::LabelRef(ident) => Instr::Store(ident),
                                 _ => return Err(ParseError::MalformedLiteral(format!("Expected identifier for STORE, got {:?}", ident_token))),
                             }
                         }
-                        Token::Hash => Instr::Hash,
-                        Token::Sign => Instr::Sign,
-                        Token::Verify => Instr::Verify,
-                        Token::Ret => Instr::Ret,
-                        Token::Stop => Instr::Stop,
                         Token::Push => {
                             self.advance_tokens(); // Consume PUSH
                             let literal_token = self.current_token.take().ok_or(ParseError::ExpectedOperand)??;
                             if let Token::Literal(val) = literal_token {
                                 Instr::Push(val)
                             } else {
-                                return Err(ParseError::MalformedLiteral(format!("{:?}", literal_token)));
+                                return Err(ParseError::MalformedLiteral(format!("Expected literal for PUSH, got {:?}", literal_token)));
                             }
                         }
                         Token::Jump => {
@@ -319,9 +332,11 @@ impl<'a> Parser<'a> {
                         Token::LabelDecl(label_name) => {
                             Instr::Label(label_name)
                         }
-                        Token::Literal(_) => return Err(ParseError::UnknownOpcode("Literal found unexpectedly".to_string())),
-                        Token::LabelRef(_) => return Err(ParseError::UnknownOpcode("LabelRef or Identifier found unexpectedly as instruction start".to_string())),
-                        Token::Identifier(_) => return Err(ParseError::UnknownOpcode("Identifier found unexpectedly as instruction start".to_string())),
+                        
+                        // Tokens that should not start an instruction if they appear here
+                        Token::Literal(val) => return Err(ParseError::UnknownOpcode(format!("Literal '{}' found unexpectedly as instruction start", val))),
+                        Token::Identifier(s) => return Err(ParseError::UnknownOpcode(format!("Identifier '{}' found unexpectedly as instruction start",s))),
+                        Token::LabelRef(s) => return Err(ParseError::UnknownOpcode(format!("LabelRef '{}' found unexpectedly as instruction start",s))),
                     };
                     instructions.push(instr);
                 }
